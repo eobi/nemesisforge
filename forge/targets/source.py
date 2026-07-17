@@ -1,0 +1,61 @@
+"""SourceTarget — a buildable source tree, compiled with a sanitizer and run on
+an input. The Phase-A concrete Target.
+
+Reuses the Nemesis Zero pattern (build with ASan in a sandbox, run, parse the
+sanitizer report), but behind Forge's uniform Target contract so the same
+Coordinator/oracles drive it. A discovery/escalation agent supplies a C harness
+(the input surface) + optional target sources; the target compiles them with
+`-fsanitize=<san>` and runs the harness on the agent's input. A sanitizer crash
+is the proof object the ladder climbs on.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional, Sequence
+
+from .. import triage
+from ..sandbox import LocalSandbox, Sandbox
+from .base import BuildResult, Observation
+
+_HARNESS = "forge_harness"
+# Deterministic, symbolized, abort-on-report so we always get a parseable crash.
+_ASAN_OPTIONS = "detect_leaks=0:abort_on_error=1:symbolize=1:halt_on_error=1"
+
+
+class SourceTarget:
+    target_type = "source"
+
+    def __init__(self, workdir: Path | str, *, name: str,
+                 languages: Sequence[str] = ("c",),
+                 sandbox: Optional[Sandbox] = None,
+                 compiler: str = "clang") -> None:
+        self.workdir = Path(workdir)
+        self.workdir.mkdir(parents=True, exist_ok=True)
+        self.name = name
+        self.languages = list(languages)
+        self.sandbox = sandbox or LocalSandbox()
+        self.compiler = compiler
+
+    def build(self, harness_source: str, *, sanitizer: str = "address",
+              target_sources: Optional[Sequence[Path]] = None) -> BuildResult:
+        src = self.workdir / f"{_HARNESS}.c"
+        src.write_text(harness_source)
+        binary = self.workdir / _HARNESS
+        argv = [self.compiler, f"-fsanitize={sanitizer}", "-g", "-O1",
+                "-fno-omit-frame-pointer", str(src),
+                *[str(p) for p in (target_sources or [])],
+                "-o", str(binary)]
+        res = self.sandbox.run(argv, cwd=self.workdir, timeout=180)
+        ok = res.rc == 0 and binary.exists()
+        return BuildResult(ok=ok, binary=binary if ok else None, log=res.output)
+
+    def run(self, binary: Path, *, stdin: bytes = b"",
+            timeout: float = 15.0) -> Observation:
+        res = self.sandbox.run([str(binary)], cwd=self.workdir, stdin=stdin,
+                               timeout=timeout, env={"ASAN_OPTIONS": _ASAN_OPTIONS})
+        crash = triage.parse(res.output)
+        return Observation(crashed=crash.crashed, crash=crash, rc=res.rc,
+                           output=res.output, timed_out=res.timed_out)
+
+    def harness_path(self) -> Path:
+        return self.workdir / f"{_HARNESS}.c"
