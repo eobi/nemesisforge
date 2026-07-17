@@ -54,6 +54,15 @@ async def run_job(ctx: JobContext, *, discovery: list[Callable],
         coord = Coordinator(ctx, discovery=discovery, oracles=oracles,
                             escalation=escalation)
         findings = await coord.execute() or []
+        # governance: collapse duplicate bugs, classify novelty (never auto-0day)
+        from .dedup import dedupe
+        from .novelty import classify
+        findings, removed = dedupe(findings)
+        if removed:
+            ctx.bus.append(EventType.LOG,
+                           text=f"deduped {removed} duplicate finding(s)")
+        for f in findings:
+            f.novelty = classify(f)
     except Exception as e:               # a job must fail loud but clean
         ctx.bus.append(EventType.ERROR, error=f"{type(e).__name__}: {e}")
     _persist(ctx, findings)
