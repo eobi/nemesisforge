@@ -1,0 +1,22 @@
+[project]
+name = "nemesis-forge"
+version = "0.1.0"
+description = "Zero-day discovery → proven-exploit engine. LLM sub-agents propose; deterministic oracles prove; a fault is escalated up a ladder to a vendor-grade exploit primitive."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["forge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
