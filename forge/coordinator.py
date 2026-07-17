@@ -17,7 +17,7 @@ from typing import Callable, Optional
 
 from .agents.base import Agent
 from .events import EventType
-from .ladder import Candidate, Finding, Outcome
+from .ladder import Candidate, Finding, Outcome, VENDOR_MIN
 from .oracles.base import Oracle, OracleRouter
 
 DiscoveryFactory = Callable[..., Agent]
@@ -28,11 +28,14 @@ class Coordinator(Agent):
 
     def __init__(self, ctx, *, discovery: list[DiscoveryFactory],
                  oracles: list[Oracle], escalation: list[Oracle] | None = None,
-                 validate: bool = False, name: str = "coordinator") -> None:
+                 validate: bool = False, package: bool = True, llm=None,
+                 name: str = "coordinator") -> None:
         super().__init__(ctx, name=name, parent_id="")
         self.discovery = discovery
         self.router = OracleRouter(oracles)
         self.escalation = list(escalation or [])
+        self.package = package          # assemble the vendor packet at rung >= 4
+        self.llm = llm                  # optional; enriches root-cause + patch
         # writer≠validator: independently re-verify reportable findings before
         # they ship. Off by default (re-running a deterministic oracle is
         # redundant); turn on when a non-deterministic/LLM writer is in the loop.
@@ -68,6 +71,12 @@ class Coordinator(Agent):
         confirmed = await agent.execute()
         finding.artifacts["validated"] = confirmed is not None
         return finding
+
+    async def _package(self, cand: Candidate, finding: Finding) -> Finding:
+        """Assemble the vendor-disclosure packet → promote to VENDOR_READY."""
+        from .agents.reporter import ReporterAgent
+        agent = self.child(ReporterAgent, finding=finding, llm=self.llm)
+        return await agent.execute() or finding
 
     async def run(self) -> list[Finding]:
         tname = getattr(self.ctx.target, "name", None) or self.ctx.job_id
@@ -123,4 +132,6 @@ class Coordinator(Agent):
                     finding = await self._escalate(cand, finding)
                 if self.validate and finding.reportable:
                     finding = await self._validate(cand, finding)
+                if self.package and finding.rung >= VENDOR_MIN:
+                    finding = await self._package(cand, finding)
                 self.findings.append(finding)

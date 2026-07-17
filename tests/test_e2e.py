@@ -37,20 +37,26 @@ def test_lab_job_end_to_end(tmp_path):
 
     assert len(findings) == 1
     f = findings[0]
-    # fuzz→sanitizer proves the fault (rung 1), then the escalation sub-agent's
-    # controllability oracle climbs it to a CONTROLLED OOB-write primitive (rung 4)
-    assert f.rung == Rung.PROVEN_PRIMITIVE
+    # the full chain, fully automated: fuzz → sanitizer(1) → controllability(4,
+    # controlled primitive) → packaged → VENDOR_READY(6) with the disclosure packet.
+    assert f.rung == Rung.VENDOR_READY
+    assert f.vendor_shippable is True
     assert f.primitive and f.primitive.controlled
     assert "heap-buffer-overflow" in f.primitive.detail.get("bug_type", "")
+    packet = f.artifacts.get("packet")
+    assert packet and packet["severity"] in ("high", "critical")
+    from pathlib import Path
+    assert Path(packet["advisory"]).exists() and Path(packet["reproducer"]).exists()
 
     types = [e.type for e in ctx.bus.all()]
     assert types[0] == EventType.JOB_START
     assert types[-1] == EventType.JOB_DONE
-    # the whole fleet — discovery + escalation sub-agents — was streamed
+    # the whole fleet — discovery + escalation + reporter — was streamed
     spawns = {e.data.get("name") for e in ctx.bus.all()
               if e.type == EventType.AGENT_SPAWNED}
-    assert {"coordinator", "fuzz", "escalation"} <= spawns
+    assert {"coordinator", "fuzz", "escalation", "reporter"} <= spawns
     assert EventType.RUNG_UP in types and EventType.CANDIDATE in types
+    assert EventType.VENDOR_PACKET in types
 
     # findings persisted for the report/packager tier
     assert (ctx.artifacts / "findings.json").exists()
