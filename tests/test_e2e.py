@@ -30,23 +30,27 @@ int main(void) {
 
 
 def test_lab_job_end_to_end(tmp_path):
-    ctx, discovery, oracles = lab_job(f"job-{tmp_path.name}", VULN,
-                                      artifacts_root=tmp_path, max_tries=4)
-    findings = asyncio.run(run_job(ctx, discovery=discovery, oracles=oracles))
+    ctx, discovery, oracles, escalation = lab_job(f"job-{tmp_path.name}", VULN,
+                                                  artifacts_root=tmp_path, max_tries=4)
+    findings = asyncio.run(run_job(ctx, discovery=discovery, oracles=oracles,
+                                   escalation=escalation))
 
     assert len(findings) == 1
-    assert findings[0].rung == Rung.PROVEN_FAULT
-    assert "heap-buffer-overflow" in findings[0].verdict.evidence["crash"]["bug_type"]
+    f = findings[0]
+    # fuzz→sanitizer proves the fault (rung 1), then the escalation sub-agent's
+    # controllability oracle climbs it to a CONTROLLED OOB-write primitive (rung 4)
+    assert f.rung == Rung.PROVEN_PRIMITIVE
+    assert f.primitive and f.primitive.controlled
+    assert "heap-buffer-overflow" in f.primitive.detail.get("bug_type", "")
 
     types = [e.type for e in ctx.bus.all()]
     assert types[0] == EventType.JOB_START
     assert types[-1] == EventType.JOB_DONE
-    # the fleet + the climb were all streamed
+    # the whole fleet — discovery + escalation sub-agents — was streamed
     spawns = {e.data.get("name") for e in ctx.bus.all()
               if e.type == EventType.AGENT_SPAWNED}
-    assert {"coordinator", "fuzz"} <= spawns
-    assert EventType.RUNG_UP in types
-    assert EventType.CANDIDATE in types
+    assert {"coordinator", "fuzz", "escalation"} <= spawns
+    assert EventType.RUNG_UP in types and EventType.CANDIDATE in types
 
     # findings persisted for the report/packager tier
     assert (ctx.artifacts / "findings.json").exists()
@@ -61,8 +65,9 @@ def test_clean_harness_finds_nothing(tmp_path):
 #include <unistd.h>
 int main(void){ char in[16]; long n=read(0,in,sizeof(in)); return (int)(n>0?in[0]:0); }
 """
-    ctx, discovery, oracles = lab_job(f"job-{tmp_path.name}", safe,
-                                      artifacts_root=tmp_path, max_tries=3)
-    findings = asyncio.run(run_job(ctx, discovery=discovery, oracles=oracles))
+    ctx, discovery, oracles, escalation = lab_job(f"job-{tmp_path.name}", safe,
+                                                  artifacts_root=tmp_path, max_tries=3)
+    findings = asyncio.run(run_job(ctx, discovery=discovery, oracles=oracles,
+                                   escalation=escalation))
     assert findings == []
     assert ctx.bus.all()[-1].type == EventType.JOB_DONE

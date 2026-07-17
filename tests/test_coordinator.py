@@ -117,3 +117,17 @@ def test_parallel_discovery_agents_merge_candidates(tmp_path):
     )
     findings = asyncio.run(coord.execute())
     assert len(findings) == 3        # 1 + 2 from the two parallel discovery agents
+
+
+def test_validate_flag_reverifies_reportable_finding(tmp_path):
+    ctx = _ctx(tmp_path)
+    cand = _cand()
+    coord = Coordinator(ctx, discovery=[partial(StubDiscovery, cands=[cand])],
+                        oracles=[StubOracle(rung=Rung.PROVEN_SECURITY)],
+                        validate=True)   # rung 3 = reportable → validator runs
+    findings = asyncio.run(coord.execute())
+    assert len(findings) == 1
+    assert findings[0].artifacts.get("validated") is True
+    spawns = {e.data.get("name") for e in ctx.bus.all()
+              if e.type == EventType.AGENT_SPAWNED}
+    assert "validator" in spawns

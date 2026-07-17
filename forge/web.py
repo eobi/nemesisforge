@@ -76,11 +76,12 @@ def api_presets() -> dict:
 async def api_scan(req: ScanReq) -> dict:
     harness = req.harness or (PRESETS.get(req.preset) or PRESETS["heap-overflow"])["harness"]
     job_id = f"forge-{uuid.uuid4().hex[:10]}"
-    ctx, discovery, oracles = lab_job(job_id, harness, artifacts_root=_RUNS,
-                                      name=req.preset)
+    ctx, discovery, oracles, escalation = lab_job(job_id, harness,
+                                                  artifacts_root=_RUNS, name=req.preset)
     _JOBS[job_id] = ctx
     # fire-and-stream: the run drives the bus the UI is already watching
-    asyncio.create_task(run_job(ctx, discovery=discovery, oracles=oracles))
+    asyncio.create_task(run_job(ctx, discovery=discovery, oracles=oracles,
+                                escalation=escalation))
     return {"job_id": job_id}
 
 

@@ -20,6 +20,7 @@ from .coordinator import Coordinator
 from .events import EventType
 from .ladder import Finding
 from .oracles.base import Oracle
+from .oracles.controllability import ControllabilityOracle
 from .oracles.sanitizer import SanitizerOracle
 from .targets.source import SourceTarget
 
@@ -43,13 +44,15 @@ def _persist(ctx: JobContext, findings: list[Finding]) -> None:
 
 
 async def run_job(ctx: JobContext, *, discovery: list[Callable],
-                  oracles: list[Oracle]) -> list[Finding]:
+                  oracles: list[Oracle],
+                  escalation: list[Oracle] | None = None) -> list[Finding]:
     ctx.bus.append(EventType.JOB_START,
                    target=getattr(ctx.target, "name", "") or ctx.job_id,
                    target_type=getattr(ctx.target, "target_type", ""))
     findings: list[Finding] = []
     try:
-        coord = Coordinator(ctx, discovery=discovery, oracles=oracles)
+        coord = Coordinator(ctx, discovery=discovery, oracles=oracles,
+                            escalation=escalation)
         findings = await coord.execute() or []
     except Exception as e:               # a job must fail loud but clean
         ctx.bus.append(EventType.ERROR, error=f"{type(e).__name__}: {e}")
@@ -65,16 +68,19 @@ async def run_job(ctx: JobContext, *, discovery: list[Callable],
 
 
 def lab_job(job_id: str, harness: str, *, artifacts_root: Optional[Path] = None,
-            name: str = "lab-target", max_tries: int = 8
-            ) -> tuple[JobContext, list[Callable], list[Oracle]]:
-    """Assemble the LLM-free end-to-end: fuzz a harness → sanitizer-prove it.
+            name: str = "lab-target", max_tries: int = 8, escalate: bool = True
+            ) -> tuple[JobContext, list[Callable], list[Oracle], list[Oracle]]:
+    """Assemble the LLM-free end-to-end: fuzz a harness → sanitizer-prove it →
+    escalate the fault toward a controlled primitive.
 
-    `max_tries` bounds the fuzz loop. Each sanitized run is fast on Linux/Docker
-    but ~15s on macOS (an ASan shadow-setup wait), so keep it low for local dev.
+    Returns (ctx, discovery, oracles, escalation). `max_tries` bounds the fuzz
+    loop. Each sanitized run is fast on Linux/Docker but ~15s on macOS (an ASan
+    shadow-setup wait), so keep it low for local dev.
     """
     root = artifacts_root or (Path.cwd() / "runs")
     target = SourceTarget(root / job_id / "work", name=name)
     ctx = JobContext(job_id, target=target, artifacts_root=root)
     discovery = [partial(FuzzDiscoveryAgent, harness=harness, max_tries=max_tries)]
     oracles: list[Oracle] = [SanitizerOracle()]
-    return ctx, discovery, oracles
+    escalation: list[Oracle] = [ControllabilityOracle()] if escalate else []
+    return ctx, discovery, oracles, escalation
