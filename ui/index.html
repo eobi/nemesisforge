@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Nemesis Forge — discover → prove → weaponize</title>
+<style>
+  :root{--bg:#0a0d14;--panel:#111725;--edge:#20293b;--txt:#d8e0ee;--muted:#7c8aa2;
+        --accent:#ff5a3c;--ok:#37d99a;--warn:#f4b942;--blue:#5aa2ff;--purple:#b18cff;}
+  *{box-sizing:border-box}
+  body{margin:0;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;background:var(--bg);color:var(--txt)}
+  header{padding:14px 20px;border-bottom:1px solid var(--edge);display:flex;align-items:baseline;gap:12px}
+  header h1{margin:0;font-size:17px;letter-spacing:.5px}
+  header h1 b{color:var(--accent)}
+  header .tag{color:var(--muted);font-size:12px}
+  .controls{display:flex;gap:8px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--edge);flex-wrap:wrap}
+  select,button{background:#0c111b;border:1px solid var(--edge);color:var(--txt);padding:7px 10px;border-radius:7px;font:inherit}
+  button.run{background:var(--accent);color:#160a08;border:0;font-weight:700;cursor:pointer}
+  #status{color:var(--muted);margin-left:auto}
+  main{display:grid;grid-template-columns:400px 1fr;height:calc(100vh - 108px)}
+  .col{overflow:auto;padding:16px 18px}
+  .col.right{border-left:1px solid var(--edge);background:#0b0f1a}
+  h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:4px 0 10px}
+  /* ladder board */
+  .rung{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;margin-bottom:3px;border:1px solid var(--edge)}
+  .rung .lbl{flex:0 0 132px;font-size:11px}
+  .rung .cnt{margin-left:auto;font-weight:700}
+  .r0{color:var(--muted)} .r1{color:#9fb0c8} .r2{color:var(--blue)} .r3{color:var(--warn)}
+  .r4{color:#ff9d5a} .r5{color:var(--accent)} .r6{color:var(--ok);border-color:#1e5c43}
+  /* agent tree */
+  #agents{margin-top:16px}
+  .agent{padding:5px 8px;border-radius:6px;margin:2px 0;border-left:2px solid var(--edge)}
+  .agent.running{border-left-color:var(--warn)} .agent.done{border-left-color:var(--ok)}
+  .agent.failed{border-left-color:var(--accent)}
+  .agent .nm{font-weight:600} .agent .kd{color:var(--muted);font-size:11px}
+  .agent .last{color:var(--muted);font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px;background:var(--muted)}
+  .dot.running{background:var(--warn)} .dot.done{background:var(--ok)} .dot.failed{background:var(--accent)}
+  /* activity feed */
+  #feed{display:flex;flex-direction:column;gap:1px;font-size:12px}
+  .a{display:flex;gap:8px;padding:3px 6px;border-radius:5px;align-items:baseline}
+  .a:hover{background:#0c1220}
+  .a .k{flex:0 0 92px;font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+  .a .m{flex:1;word-break:break-word}
+  .a.think{background:#0c1020;border-left:2px solid var(--warn)} .a.think .k{color:var(--warn)}
+  .a.oracle .k{color:var(--blue)}
+  .a.up{background:#0b1612} .a.up .k,.a.up code{color:var(--ok)}
+  .a.bad .k,.a.bad .m{color:#d98a7a}
+  .a.spawn .k{color:var(--purple)}
+  .a.find{background:#160b0c;border:1px solid #3a2230;border-left:3px solid var(--accent);border-radius:8px;padding:9px;margin:6px 0}
+  code{color:var(--ok)}
+  .badge{font-size:10px;padding:1px 7px;border-radius:9px;background:var(--ok);color:#04130c}
+</style>
+</head>
+<body>
+<header>
+  <h1>NEMESIS <b>FORGE</b></h1>
+  <span class="tag">discover · <b style="color:var(--warn)">prove</b> · weaponize — an oracle certifies every rung</span>
+</header>
+<div class="controls">
+  <span style="color:var(--muted)">lab target</span>
+  <select id="preset"></select>
+  <button class="run" onclick="scan()">▶ Run engagement</button>
+  <span id="status">pick a lab target and run.</span>
+</div>
+<main>
+  <section class="col left">
+    <h2>Proof ladder</h2>
+    <div id="ladder"></div>
+    <h2 id="agentsHdr">Agent fleet</h2>
+    <div id="agents"><div style="color:var(--muted)">no agents yet</div></div>
+  </section>
+  <section class="col right">
+    <h2>Live activity</h2>
+    <div id="findings"></div>
+    <div id="feed"></div>
+  </section>
+</main>
+<script>
+const RUNGS = ["UNVERIFIED","PROVEN_FAULT","PROVEN_REACHABLE","PROVEN_SECURITY",
+               "PROVEN_PRIMITIVE","PROVEN_EXPLOIT","VENDOR_READY"];
+let ES=null, AGENTS={}, BOARD={};
+
+async function boot(){
+  const d = await (await fetch('/api/presets')).json();
+  const s = document.getElementById('preset'); s.innerHTML='';
+  d.presets.forEach(p=>{const o=document.createElement('option');o.value=p.id;o.textContent=p.label;s.appendChild(o);});
+  renderLadder();
+}
+function esc(x){return String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+function renderLadder(){
+  const box=document.getElementById('ladder'); box.innerHTML='';
+  for(let r=6;r>=0;r--){
+    const n=BOARD[r]||0;
+    const d=document.createElement('div'); d.className='rung r'+r;
+    d.innerHTML=`<span class="lbl">${r} · ${RUNGS[r]}</span><span class="cnt">${n||''}</span>`;
+    box.appendChild(d);
+  }
+}
+function depth(id){let d=0,a=AGENTS[id];while(a&&a.parent){d++;a=AGENTS[a.parent];}return d;}
+function renderAgents(){
+  const box=document.getElementById('agents');
+  const ids=Object.keys(AGENTS);
+  if(!ids.length){box.innerHTML='<div style="color:var(--muted)">no agents yet</div>';return;}
+  box.innerHTML='';
+  ids.forEach(id=>{
+    const a=AGENTS[id];
+    const el=document.createElement('div'); el.className='agent '+a.status;
+    el.style.marginLeft=(depth(id)*14)+'px';
+    el.innerHTML=`<div><span class="dot ${a.status}"></span><span class="nm">${esc(a.name)}</span> <span class="kd">${esc(a.kind)}</span></div>`+
+      (a.last?`<div class="last">${esc(a.last)}</div>`:'');
+    box.appendChild(el);
+  });
+  document.getElementById('agentsHdr').textContent=`Agent fleet (${ids.length})`;
+}
+
+function feedLine(cls,k,m){
+  const f=document.getElementById('feed');
+  const d=document.createElement('div'); d.className='a '+cls;
+  d.innerHTML=`<span class="k">${k}</span><span class="m">${m}</span>`;
+  f.prepend(d);
+}
+function addFinding(ev){
+  const w=document.getElementById('findings');
+  const d=document.createElement('div'); d.className='a find';
+  d.innerHTML=`<span class="badge">RUNG ${ev.rung}</span> <b>${esc(ev.title)}</b>
+    <div style="color:var(--muted);font-size:11px;margin-top:3px">${esc(ev.rung_name||'')}</div>`;
+  w.appendChild(d);
+}
+
+function handle(ev){
+  const D=ev.data||{};
+  switch(ev.type){
+    case 'agent_spawned':
+      AGENTS[ev.agent_id]={name:D.name,kind:D.kind,parent:ev.parent_id,status:'running',last:''};
+      feedLine('spawn','spawn',`<b>${esc(D.name)}</b> <span style="color:var(--muted)">${esc(D.kind)}</span> joined`);
+      renderAgents(); break;
+    case 'agent_done':
+      if(AGENTS[ev.agent_id]) AGENTS[ev.agent_id].status=D.failed?'failed':'done';
+      renderAgents(); break;
+    case 'objective':
+      if(AGENTS[ev.agent_id])AGENTS[ev.agent_id].last='◹ '+D.text;
+      feedLine('','objective',`<b>${esc(agentName(ev))}</b> · ${esc(D.text)}`);renderAgents();break;
+    case 'think':
+      if(AGENTS[ev.agent_id])AGENTS[ev.agent_id].last=`step ${D.step}: ${D.text}`;
+      feedLine('think',`step ${D.step??''}`,`<b>${esc(agentName(ev))}</b> · ${esc(D.text)}`);renderAgents();break;
+    case 'tool_call': feedLine('','tool',`<b>${esc(agentName(ev))}</b> · ${esc(D.tool)}`);break;
+    case 'tool_result': feedLine('','tool·r',`${esc(D.tool)} ${D.crashed?'→ <span style="color:var(--accent)">CRASH '+esc(D.bug||'')+'</span>':(D.ok?'ok':'')}`);break;
+    case 'candidate': feedLine('','candidate',`<code>${esc(D.title)}</code> <span style="color:var(--muted)">(${esc(D.bug_class)})</span>`);break;
+    case 'oracle_verdict':
+      feedLine(D.outcome==='proven'?'oracle':'bad','verdict',
+        `${esc(D.oracle||'-')} → <b>${esc(D.outcome)}</b>${D.rung!=null?' rung '+D.rung:''}${D.feedback?' · '+esc(D.feedback):''}`);break;
+    case 'rung_up':
+      feedLine('up',`rung ${D.rung}↑`,`<code>${esc(D.title)}</code> → ${esc(D.rung_name)}`);break;
+    case 'ladder': applyBoard(D.board);break;
+    case 'poc_written': feedLine('up','poc',`<code>${esc(D.title)}</code> PoC written`);break;
+    case 'validated': feedLine('up','validated',`<code>${esc(D.title)}</code> confirmed by validator`);break;
+    case 'log': feedLine('','log',esc(D.text));break;
+    case 'error': feedLine('bad','error',esc(D.error));break;
+    case 'job_start': setStatus(`running · ${esc(D.target)} (${esc(D.target_type)})`);break;
+    case 'job_done':
+      applyBoard(D.board);
+      setStatus(`done · ${D.findings} finding(s) · ${D.reportable||0} reportable · ${D.vendor_ready||0} vendor-ready`);
+      (window._findings||[]).forEach(addFinding);
+      break;
+  }
+}
+function agentName(ev){return (AGENTS[ev.agent_id]||{}).name||ev.agent_id||'coordinator';}
+function applyBoard(board){
+  BOARD={}; (board||[]).forEach(b=>{BOARD[b.rung]=(BOARD[b.rung]||0)+1;});
+  renderLadder();
+}
+function setStatus(s){document.getElementById('status').textContent=s;}
+
+async function scan(){
+  document.getElementById('feed').innerHTML='';
+  document.getElementById('findings').innerHTML='';
+  AGENTS={};BOARD={};renderAgents();renderLadder();
+  setStatus('queuing…');
+  const preset=document.getElementById('preset').value;
+  const {job_id}=await (await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({preset})})).json();
+  if(ES)ES.close();
+  ES=new EventSource(`/api/job/${job_id}/stream`);
+  ES.onmessage=async m=>{
+    const ev=JSON.parse(m.data); handle(ev);
+    if(ev.type==='job_done'){
+      const d=await (await fetch(`/api/job/${job_id}`)).json();
+      const w=document.getElementById('findings');w.innerHTML='';
+      (d.findings||[]).forEach(f=>{
+        const el=document.createElement('div');el.className='a find';
+        el.innerHTML=`<span class="badge">RUNG ${f.rung}</span> <b>${esc(f.candidate?.title||'')}</b>
+          <div style="color:var(--muted);font-size:11px;margin-top:3px">${esc((f.verdict?.oracle)||'')} · ${esc(f.primitive?.kind||'')}</div>`;
+        w.appendChild(el);
+      });
+      ES.close();
+    }
+  };
+}
+boot();
+</script>
+</body>
+</html>

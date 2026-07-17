@@ -18,8 +18,12 @@ from ..sandbox import LocalSandbox, Sandbox
 from .base import BuildResult, Observation
 
 _HARNESS = "forge_harness"
-# Deterministic, symbolized, abort-on-report so we always get a parseable crash.
-_ASAN_OPTIONS = "detect_leaks=0:abort_on_error=1:symbolize=1:halt_on_error=1"
+# Deterministic, abort-on-report so we always get a parseable crash. Symbolization
+# is toggled per-run: discovery only needs "did it crash + what class" (fast,
+# symbolize=0), while the oracle wants frames for the rung decision (symbolize=1).
+# On macOS symbolization goes through `atos` and costs ~15s per crash, so keeping
+# it off for the fuzz loop is a large speedup (Linux/Docker symbolizes fast).
+_ASAN_BASE = "detect_leaks=0:abort_on_error=1:halt_on_error=1"
 
 
 class SourceTarget:
@@ -49,10 +53,11 @@ class SourceTarget:
         ok = res.rc == 0 and binary.exists()
         return BuildResult(ok=ok, binary=binary if ok else None, log=res.output)
 
-    def run(self, binary: Path, *, stdin: bytes = b"",
-            timeout: float = 15.0) -> Observation:
+    def run(self, binary: Path, *, stdin: bytes = b"", timeout: float = 60.0,
+            symbolize: bool = True) -> Observation:
+        opts = f"{_ASAN_BASE}:symbolize={1 if symbolize else 0}"
         res = self.sandbox.run([str(binary)], cwd=self.workdir, stdin=stdin,
-                               timeout=timeout, env={"ASAN_OPTIONS": _ASAN_OPTIONS})
+                               timeout=timeout, env={"ASAN_OPTIONS": opts})
         crash = triage.parse(res.output)
         return Observation(crashed=crash.crashed, crash=crash, rc=res.rc,
                            output=res.output, timed_out=res.timed_out)

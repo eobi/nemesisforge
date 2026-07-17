@@ -43,20 +43,21 @@ class Sandbox(Protocol):
         ...
 
 
-def _limits(cpu_s: int, mem_bytes: int, fsize_bytes: int):
+def _limits(cpu_s: int, fsize_bytes: int):
     def _apply():
         try:
             resource.setrlimit(resource.RLIMIT_CPU, (cpu_s, cpu_s + 1))
-        except (ValueError, OSError):
-            pass
-        try:                                    # not enforced on macOS; harmless
-            resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
         except (ValueError, OSError):
             pass
         try:
             resource.setrlimit(resource.RLIMIT_FSIZE, (fsize_bytes, fsize_bytes))
         except (ValueError, OSError):
             pass
+        # NOTE: deliberately do NOT set RLIMIT_AS — sanitized (ASan/HWASan)
+        # binaries reserve tens of terabytes of *virtual* address space for
+        # shadow memory, so an address-space cap makes every run crawl (~15s) or
+        # fail. Memory is bounded by RLIMIT_CPU + the wall-clock timeout instead;
+        # the production DockerSandbox uses a real --memory cgroup cap.
         os.setpgrp()                            # own process group → clean kill
     return _apply
 
@@ -65,10 +66,8 @@ class LocalSandbox:
     """Dev-only: subprocess + rlimits + timeout. Never isolation."""
     isolated = False
 
-    def __init__(self, *, cpu_s: int = 20, mem_mb: int = 2048,
-                 fsize_mb: int = 256) -> None:
+    def __init__(self, *, cpu_s: int = 30, fsize_mb: int = 256) -> None:
         self.cpu_s = cpu_s
-        self.mem_bytes = mem_mb * 1024 * 1024
         self.fsize_bytes = fsize_mb * 1024 * 1024
 
     def run(self, argv, *, cwd=None, stdin=b"", timeout=30.0, env=None):
@@ -77,7 +76,7 @@ class LocalSandbox:
                 list(argv), cwd=str(cwd) if cwd else None, input=stdin,
                 capture_output=True, timeout=timeout,
                 env={**os.environ, **(env or {})},
-                preexec_fn=_limits(self.cpu_s, self.mem_bytes, self.fsize_bytes),
+                preexec_fn=_limits(self.cpu_s, self.fsize_bytes),
             )
         except subprocess.TimeoutExpired as e:
             return ExecResult(rc=124,

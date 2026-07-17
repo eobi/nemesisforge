@@ -45,8 +45,9 @@ class SanitizerOracle:
             return Verdict(Outcome.INCONCLUSIVE, Rung.UNVERIFIED, self.name,
                            feedback="build failed: " + build.log[-600:])
 
+        # symbolized so we get frames for the rung decision (slower on macOS).
         obs = target.run(build.binary, stdin=input_bytes,
-                         timeout=pc.get("timeout", 15.0))
+                         timeout=pc.get("timeout", 60.0), symbolize=True)
         if not obs.crashed:
             return Verdict(Outcome.REFUTED, Rung.UNVERIFIED, self.name,
                            feedback="no sanitizer crash on this input")

@@ -17,7 +17,7 @@ from typing import Callable
 
 from .agents.base import Agent
 from .events import EventType
-from .ladder import Candidate, Finding, Outcome, REPORTABLE
+from .ladder import Candidate, Finding, Outcome
 from .oracles.base import Oracle, OracleRouter
 
 DiscoveryFactory = Callable[..., Agent]
@@ -76,9 +76,12 @@ class Coordinator(Agent):
             if climbed:
                 self.em.emit(EventType.RUNG_UP, title=cand.title,
                              rung=int(verdict.rung), rung_name=verdict.rung.name)
-            if verdict.outcome is Outcome.PROVEN and verdict.rung >= REPORTABLE:
+            if verdict.outcome is Outcome.PROVEN:
+                # Every PROVEN candidate is a finding; the Finding.reportable /
+                # vendor_shippable properties gate what a report/vendor sees. This
+                # lets the UI show the whole fleet's proven output, and Phase B's
+                # escalation sub-agents take a reportable one from here up to
+                # PROVEN_PRIMITIVE → PROVEN_EXPLOIT → VENDOR_READY.
                 self.findings.append(Finding(
                     candidate=cand, verdict=verdict, rung=verdict.rung,
                     primitive=verdict.primitive))
-                # Phase B hook: an escalation sub-agent takes it from here to
-                # PROVEN_PRIMITIVE → PROVEN_EXPLOIT → VENDOR_READY.

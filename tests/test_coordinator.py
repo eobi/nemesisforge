@@ -82,13 +82,16 @@ def test_agent_tree_parentage_in_events(tmp_path):
     assert any(e.type == EventType.LADDER for e in evs)
 
 
-def test_proven_fault_below_reportable_is_not_a_finding(tmp_path):
+def test_proven_fault_is_a_finding_but_not_reportable(tmp_path):
     ctx = _ctx(tmp_path)
     cand = _cand()
     coord = Coordinator(ctx, discovery=[partial(StubDiscovery, cands=[cand])],
-                        oracles=[StubOracle(rung=Rung.PROVEN_FAULT)])  # rung 1 < REPORTABLE
+                        oracles=[StubOracle(rung=Rung.PROVEN_FAULT)])  # rung 1
     findings = asyncio.run(coord.execute())
-    assert findings == []                          # climbed, but not reportable
+    # every proven candidate is surfaced as a finding...
+    assert len(findings) == 1 and findings[0].rung == Rung.PROVEN_FAULT
+    # ...but a rung-1 fault is not yet reportable / vendor-shippable
+    assert findings[0].reportable is False and findings[0].vendor_shippable is False
     assert ctx.ladder.rung_of(cand) == Rung.PROVEN_FAULT
     assert any(e.type == EventType.RUNG_UP for e in ctx.bus.all())
 
