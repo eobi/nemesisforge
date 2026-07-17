@@ -84,3 +84,23 @@ def lab_job(job_id: str, harness: str, *, artifacts_root: Optional[Path] = None,
     oracles: list[Oracle] = [SanitizerOracle()]
     escalation: list[Oracle] = [ControllabilityOracle()] if escalate else []
     return ctx, discovery, oracles, escalation
+
+
+def binary_lab_job(job_id: str, binary_path: str, *,
+                   artifacts_root: Optional[Path] = None,
+                   name: str = "binary-target", max_tries: int = 8
+                   ) -> tuple[JobContext, list[Callable], list[Oracle], list[Oracle]]:
+    """Assemble a job for a closed-source binary: fuzz it concretely → prove the
+    crash by signal → (symbolic escalation lights up if angr is present)."""
+    from .oracles.binary_crash import BinaryCrashOracle
+    from .oracles.symbolic import SymbolicOracle
+    from .targets.binary import BinaryTarget
+
+    root = artifacts_root or (Path.cwd() / "runs")
+    target = BinaryTarget(binary_path, name=name)
+    ctx = JobContext(job_id, target=target, artifacts_root=root)
+    discovery = [partial(FuzzDiscoveryAgent, harness="", bug_class="binary_crash",
+                         max_tries=max_tries)]
+    oracles: list[Oracle] = [BinaryCrashOracle()]
+    escalation: list[Oracle] = [SymbolicOracle()]
+    return ctx, discovery, oracles, escalation

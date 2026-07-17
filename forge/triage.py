@@ -34,6 +34,15 @@ _WRITE_PRIMITIVE_CLASSES = {
     "stack-use-after-scope", "dynamic-stack-buffer-overflow",
 }
 
+# Fatal signals → a bug class, for a bare binary with no sanitizer (Phase C).
+# A subprocess killed by signal N returns rc = -N (POSIX); some shells report
+# 128+N. SIGSEGV/SIGBUS are the memory-safety-relevant crashes.
+_SIGNAL_BUG = {
+    11: "segv", 10: "bus-error", 6: "abort", 4: "illegal-instruction",
+    8: "floating-point-exception", 5: "trap",
+}
+_MEMORY_SIGNALS = {11, 10}   # SIGSEGV, SIGBUS — likely memory-safety
+
 
 @dataclass
 class Frame:
@@ -68,8 +77,19 @@ class CrashInfo:
             or self.bug_type in {"heap-use-after-free"}
 
 
-def parse(output: str) -> CrashInfo:
-    """Parse combined stdout+stderr from a sanitized run into CrashInfo."""
+def _signal_of(rc: Optional[int]) -> Optional[int]:
+    if rc is None:
+        return None
+    if rc < 0:
+        return -rc
+    if rc > 128:            # 128 + signal convention
+        return rc - 128
+    return None
+
+
+def parse(output: str, rc: Optional[int] = None) -> CrashInfo:
+    """Parse a run into CrashInfo. A sanitizer report wins; otherwise a fatal
+    signal in `rc` (for a bare binary with no sanitizer) is a crash too."""
     text = output or ""
     ci = CrashInfo()
 
@@ -92,6 +112,17 @@ def parse(output: str) -> CrashInfo:
 
     for fm in _FRAME.finditer(text):
         ci.frames.append(Frame(fm.group(1), fm.group(2), int(fm.group(3))))
+
+    # No sanitizer report but the process died on a fatal signal → still a crash
+    # (the Phase-C bare-binary path). Memory signals imply a WRITE-ish fault.
+    if not ci.crashed:
+        sig = _signal_of(rc)
+        if sig in _SIGNAL_BUG:
+            ci.crashed = True
+            ci.bug_type = _SIGNAL_BUG[sig]
+            if sig in _MEMORY_SIGNALS:
+                ci.access = "WRITE"      # conservative; a SEGV write is common
+            ci.summary = f"process crashed with SIG{ci.bug_type.upper()} (signal {sig})"
 
     if ci.crashed:
         top = ci.top
