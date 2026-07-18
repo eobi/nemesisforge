@@ -44,6 +44,7 @@ class VariantHunterAgent(Agent):
                  repo: Optional[_repo.RepoInfo] = None, llm=None,
                  max_sources: int = 8, max_targets: int = 3, fuzz_time: int = 30,
                  sanitizer: str = "address,undefined",
+                 changed_functions: Optional[set] = None,
                  corpus_root: Optional[Path] = None) -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.repo = repo or getattr(ctx, "repo", None)
@@ -52,6 +53,9 @@ class VariantHunterAgent(Agent):
         self.max_targets = max_targets
         self.fuzz_time = fuzz_time
         self.sanitizer = sanitizer          # ASan + UBSan by default on repos
+        # Continuous mode: when set, hunt ONLY sinks in functions changed by a diff
+        # (catch the regression the day the commit lands — variant analysis's edge).
+        self.changed_functions = set(changed_functions) if changed_functions else None
         self.corpus_root = Path(corpus_root) if corpus_root else ctx.artifacts / "corpus"
 
     async def run(self) -> list[Candidate]:
@@ -72,6 +76,11 @@ class VariantHunterAgent(Agent):
         srcs = self.repo.sources[:self.max_sources]
         ci = await asyncio.to_thread(cscan.scan_repo, srcs)
         ranked = ci.ranked_sinks(limit=30)
+        if self.changed_functions:
+            focused = [s for s in ranked if s.func in self.changed_functions]
+            self.think(0, f"continuous mode: {len(self.changed_functions)} changed "
+                          f"function(s) → {len(focused)}/{len(ranked)} sinks in scope")
+            ranked = focused or ranked      # fall back to all if diff touched no sink
         self.think(0, f"analyzed {len(ci.funcs)} functions, "
                       f"{len(ci.entry_points())} entry points, "
                       f"{len(ranked)} ranked reachable sinks")

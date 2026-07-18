@@ -130,6 +130,52 @@ def rank_sources(root: Path, *, limit: int = 60) -> list[Path]:
     return [p for _s, p in scored[:limit]]
 
 
+def changed_functions(root: Path, since_ref: str, *, timeout: int = 60) -> set[str]:
+    """Function names touched by `git diff since_ref..HEAD` — the surface for
+    continuous / variant-analysis mode (hunt the bug the day the commit lands).
+
+    Parses unified-diff hunks for the new-side line ranges of each changed C
+    source, then maps those lines to the functions that span them (via cscan)."""
+    from ..analysis import cscan
+    root = Path(root)
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root), "diff", "--unified=0", "--no-color",
+             f"{since_ref}..HEAD", "--", "*.c", "*.cc", "*.cpp", "*.cxx"],
+            capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return set()
+    if r.returncode != 0:
+        return set()
+
+    changed: dict[str, set[int]] = {}
+    cur: Optional[str] = None
+    for line in r.stdout.splitlines():
+        if line.startswith("+++ b/"):
+            cur = line[6:].strip()
+            changed.setdefault(cur, set())
+        elif line.startswith("@@") and cur is not None:
+            m = re.search(r"\+(\d+)(?:,(\d+))?", line)
+            if m:
+                start = int(m.group(1))
+                count = int(m.group(2) or 1)
+                changed[cur].update(range(start, start + max(count, 1)))
+
+    funcs: set[str] = set()
+    for rel, lines in changed.items():
+        p = root / rel
+        if not p.exists() or not lines:
+            continue
+        try:
+            fns, _sinks = cscan.scan_text(p.read_text(errors="replace"), file=str(p))
+        except Exception:
+            continue
+        for f in fns:
+            if any(f.start <= ln <= f.end for ln in lines):
+                funcs.add(f.name)
+    return funcs
+
+
 def entry_snippet(path: Path, *, max_lines: int = 120) -> str:
     """A compact view of a source's likely entry points for the LLM: the lines
     around functions that parse untrusted input, with line numbers."""

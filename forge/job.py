@@ -73,15 +73,24 @@ async def run_job(ctx: JobContext, *, discovery: list[Callable],
         coord = Coordinator(ctx, discovery=discovery, oracles=oracles,
                             escalation=escalation, llm=llm, harness=harness)
         findings = await coord.execute() or []
-        # governance: collapse duplicate bugs, classify novelty (never auto-0day)
+        # governance: collapse duplicate bugs, classify novelty vs a persistent
+        # known-crash corpus (so only GENUINELY new bugs read as candidates), never
+        # auto-labeling a zero-day.
         from .dedup import dedupe
-        from .novelty import classify
+        from .knowncrashes import KnownCrashes
         findings, removed = dedupe(findings)
         if removed:
             ctx.bus.append(EventType.LOG,
                            text=f"deduped {removed} duplicate finding(s)")
+        corpus = KnownCrashes(ctx.artifacts.parent / "known_crashes.json")
         for f in findings:
-            f.novelty = classify(f)
+            f.novelty = corpus.classify(f)
+        corpus.save()
+        novel = sum(1 for f in findings if f.novelty == "candidate")
+        if findings:
+            ctx.bus.append(EventType.LOG,
+                           text=f"novelty: {novel} new candidate(s), "
+                                f"{len(findings) - novel} known/n-day")
     except Exception as e:               # a job must fail loud but clean
         ctx.bus.append(EventType.ERROR, error=f"{type(e).__name__}: {e}")
     _persist(ctx, findings)
@@ -149,6 +158,7 @@ def lab_job(job_id: str, harness: str, *, artifacts_root: Optional[Path] = None,
 
 
 def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
+             diff_ref: Optional[str] = None,
              artifacts_root: Optional[Path] = None, max_targets: int = 3,
              fuzz_time: int = 30, escalate: bool = True,
              provider: Optional[str] = None, model: Optional[str] = None,
@@ -170,11 +180,15 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     ctx = JobContext(job_id, target=target, artifacts_root=root)
     ctx.repo = info                                  # for the visibility layer
     llm = make_client(provider, model, api_key, base_url)
+    # Continuous mode (Phase K): if a diff ref is given, hunt only the functions
+    # changed since it — catch a regression the day the commit lands.
+    changed = _repo.changed_functions(info.root, diff_ref) if diff_ref else None
     # The reasoning tier (Phase I): understand the code, rank reachable sinks, and
     # AIM harness synthesis + fuzzing where a bug most likely hides. It spawns
     # harness-synth sub-agents, so it subsumes the plain-synth path.
     discovery = [partial(VariantHunterAgent, repo=info, llm=llm,
                          max_targets=max_targets, fuzz_time=fuzz_time,
+                         changed_functions=changed,
                          corpus_root=root / job_id / "corpus")]
     oracles: list[Oracle] = [SanitizerOracle()]
     escalation: list[Oracle] = [ControllabilityOracle()] if escalate else []
