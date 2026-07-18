@@ -211,8 +211,8 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
             ctx.build_system = {"attempted": True, "ok": bool(prod.ok),
                                 "system": prod.system,
                                 "archives": len(prod.archives)}
-            if prod.ok and prod.archives:
-                target.extra_link_objects = prod.link_inputs()
+            if prod.ok and prod.link_inputs():   # archive OR loose objects (cmake
+                target.extra_link_objects = prod.link_inputs()   # often emits .o)
                 bdir = Path(info.root) / "_forge_build"
                 target.extra_include_dirs = [Path(info.root)] + (
                     [bdir] if bdir.exists() else [])
