@@ -47,6 +47,9 @@ def test_lab_job_end_to_end(tmp_path):
     assert packet and packet["severity"] in ("high", "critical")
     from pathlib import Path
     assert Path(packet["advisory"]).exists() and Path(packet["reproducer"]).exists()
+    # the reproducer + symbolized crash survive the rung-1→4 escalation upgrade
+    assert packet["reproducer_len"] > 0
+    assert f.verdict.evidence.get("crash", {}).get("frames")
 
     types = [e.type for e in ctx.bus.all()]
     assert types[0] == EventType.JOB_START

@@ -50,6 +50,17 @@ class Coordinator(Agent):
                            escalation_oracles=self.escalation)
         best = await agent.execute()
         if best is not None and best.outcome is Outcome.PROVEN and best.rung > finding.rung:
+            # Carry the base proof's reproducer + symbolized crash forward: the
+            # escalation oracle certified a higher rung, but the richest crash
+            # evidence (symbolized frames, the captured trigger) was produced by
+            # the initial symbolized proof. The packet needs both.
+            base_ev = finding.verdict.evidence or {}
+            if not best.reproducer and finding.verdict.reproducer:
+                best.reproducer = finding.verdict.reproducer
+            if "crash" not in (best.evidence or {}) and base_ev.get("crash"):
+                best.evidence = {**(best.evidence or {}),
+                                 "crash": base_ev["crash"],
+                                 "sanitizer_output": base_ev.get("sanitizer_output", "")}
             return Finding(candidate=cand, verdict=best, rung=best.rung,
                            primitive=best.primitive or finding.primitive)
         return finding
