@@ -83,14 +83,28 @@ async def run_job(ctx: JobContext, *, discovery: list[Callable],
             ctx.bus.append(EventType.LOG,
                            text=f"deduped {removed} duplicate finding(s)")
         corpus = KnownCrashes(ctx.artifacts.parent / "known_crashes.json")
+        from . import cve_check
+        lib = getattr(getattr(ctx, "repo", None), "root", None)
+        libname = lib.name if lib else getattr(ctx.target, "name", "")
         for f in findings:
             f.novelty = corpus.classify(f)
+            # Cross-check against real advisories — NEVER auto-claim "novel". Attach
+            # the verdict + the exact queries a human must run to confirm a 0-day.
+            cr = (f.verdict.evidence or {}).get("crash", {})
+            top = (cr.get("frames") or [{}])[0]
+            ver = cve_check.assess(library=libname,
+                                   function=top.get("func", ""),
+                                   bug_type=cr.get("bug_type", ""))
+            f.artifacts["novelty_verification"] = ver
+            if ver["status"] == cve_check.KNOWN:
+                f.novelty = "n-day"          # matched a real advisory
         corpus.save()
-        novel = sum(1 for f in findings if f.novelty == "candidate")
+        unver = sum(1 for f in findings if f.novelty == "candidate")
         if findings:
             ctx.bus.append(EventType.LOG,
-                           text=f"novelty: {novel} new candidate(s), "
-                                f"{len(findings) - novel} known/n-day")
+                           text=f"novelty: {unver} UNVERIFIED candidate(s) "
+                                f"(require CVE cross-check — never auto-0day), "
+                                f"{len(findings) - unver} known/n-day")
     except Exception as e:               # a job must fail loud but clean
         ctx.bus.append(EventType.ERROR, error=f"{type(e).__name__}: {e}")
     _persist(ctx, findings)
