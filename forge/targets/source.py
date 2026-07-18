@@ -108,6 +108,7 @@ class SourceTarget:
     def build(self, harness_source: str, *, sanitizer: str = "address",
               target_sources: Optional[Sequence[Path]] = None,
               include_dirs: Optional[Sequence[Path]] = None,
+              extra_objects: Optional[Sequence[str]] = None,
               fuzzer: bool = False, libfuzzer_driver: bool = False) -> BuildResult:
         """Compile a harness under a sanitizer.
 
@@ -182,8 +183,11 @@ class SourceTarget:
             lib = list(target_sources or [])
             objs, objlog = (self._lib_objects(lib, compiler, common)
                             if lib else ([], ""))
+            # Pre-built objects/archives from the repo's OWN build system (Phase N)
+            # are linked directly — no recompile.
+            prebuilt = [str(o) for o in (extra_objects or [])]
             front = [str(src)] + ([str(driver)] if driver else [])
-            argv = [compiler, *common, *front, *objs, "-o", str(binary)]
+            argv = [compiler, *common, *front, *objs, *prebuilt, "-o", str(binary)]
             res = sb.run(argv, cwd=bdir, timeout=600)
         finally:
             if prev_cpu is not None:
