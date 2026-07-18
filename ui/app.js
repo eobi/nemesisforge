@@ -18,6 +18,7 @@ function navHTML(active){
   return `<nav class="nav">
     <a class="brand" href="/"><span class="mark">NF</span>NEMESIS <b>FORGE</b></a>
     ${tab('console','/','Console')}
+    ${tab('hunt','/hunt','Hunt')}
     ${tab('activity','/activity','Live Activity')}
     ${tab('history','/history','History')}
     ${tab('health','/health','Health')}

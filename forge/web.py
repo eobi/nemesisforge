@@ -91,6 +91,23 @@ def api_audit(user: str = Depends(current_user), limit: int = 200) -> dict:
     log = audit.audit()
     return {"entries": log.recent(limit) if log else []}
 
+
+_SCOUT_CACHE: dict = {}
+
+
+@app.get("/api/scout")
+def api_scout(user: str = Depends(current_user), limit: int = 15,
+              refresh: bool = False) -> dict:
+    """Ranked UNDER-FUZZED candidate targets (proposals — a human authorizes each)."""
+    from . import scout as _scout
+    if refresh or "result" not in _SCOUT_CACHE:
+        res = _scout.scout(limit=limit, cache_dir=_RUNS / "_scout")
+        _SCOUT_CACHE["result"] = res
+        if audit.audit():
+            audit.audit().record("scout", actor=user,
+                                 found=len(res.get("targets", [])))
+    return _SCOUT_CACHE["result"]
+
 # Lab harnesses to demo the fleet end-to-end without an LLM or a real repo.
 PRESETS: dict[str, dict] = {
     "heap-overflow": {
@@ -222,6 +239,11 @@ def page_run(job_id: str) -> str:
 @app.get("/health", response_class=HTMLResponse)
 def page_health() -> str:
     return _page("health.html")
+
+
+@app.get("/hunt", response_class=HTMLResponse)
+def page_hunt() -> str:
+    return _page("hunt.html")
 
 
 @app.get("/app.css")

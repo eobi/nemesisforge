@@ -1,0 +1,71 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hunt · Nemesis Forge</title>
+<link rel="stylesheet" href="/app.css"><script src="/app.js"></script></head>
+<body>
+<div class="wrap">
+  <h1 class="page">Hunt — under-fuzzed targets</h1>
+  <div class="sub">Zero-days survive in the long tail that Google's OSS-Fuzz never touched. The scout finds security-relevant C/C++ parsers <b>not already in OSS-Fuzz</b> and ranks them. You authorize a target, then launch a deep campaign against it.</div>
+
+  <div class="card" style="margin-bottom:16px"><div class="bd">
+    <div class="row" style="align-items:flex-end">
+      <button class="btn primary" onclick="loadScout(true)">⟳ Scout targets</button>
+      <div><label class="fld">Campaign minutes / harness</label><input id="cmin" type="number" value="20" style="width:120px"></div>
+      <div><label class="fld">Brain</label><select id="provider" style="min-width:170px"></select></div>
+      <div><label class="fld">Model</label><select id="model" style="min-width:150px"></select></div>
+      <span id="status" class="mut" style="font-size:13px"></span>
+    </div>
+    <div class="mut" style="font-size:11px;margin-top:8px">Set <code>GITHUB_TOKEN</code> in the server env for higher search rate limits. Coordinated disclosure only — the scout proposes; you decide.</div>
+  </div></div>
+
+  <div class="card">
+    <div class="hd">Candidates <span id="meta" class="mut" style="text-transform:none;letter-spacing:0;font-weight:400"></span></div>
+    <table class="data"><thead><tr>
+      <th>Library</th><th>Lang</th><th>Stars</th><th>Score</th><th>Why it's a candidate</th><th></th>
+    </tr></thead><tbody id="rows"><tr><td colspan=6 class="empty">Click “Scout targets”.</td></tr></tbody></table>
+  </div>
+</div>
+<script>
+let PROVIDERS=[];
+async function loadProviders(){
+  const pv=await (await fetch('/api/providers')).json(); PROVIDERS=pv.providers;
+  const ps=document.getElementById('provider'); ps.innerHTML='';
+  PROVIDERS.forEach(p=>ps.add(new Option(p.label,p.id)));
+  ps.value = PROVIDERS.find(p=>p.id==='anthropic')?'anthropic':(PROVIDERS[0]?.id||'');
+  onProv(); ps.onchange=onProv;
+}
+function onProv(){ const p=PROVIDERS.find(x=>x.id===document.getElementById('provider').value);
+  const ms=document.getElementById('model'); ms.innerHTML=''; (p?.models||[]).forEach(m=>ms.add(new Option(m,m))); }
+async function loadScout(refresh){
+  document.getElementById('status').textContent='scouting GitHub…';
+  const d=await (await fetch('/api/scout?limit=20'+(refresh?'&refresh=true':''))).json();
+  document.getElementById('status').textContent='';
+  document.getElementById('meta').textContent=
+    `— ${(d.targets||[]).length} shown, ${d.considered||0} considered, ${d.oss_fuzz_known||0} OSS-Fuzz projects excluded`;
+  const tb=document.getElementById('rows'); tb.innerHTML='';
+  if(!(d.targets||[]).length){ tb.innerHTML=`<tr><td colspan=6 class="empty">${esc(d.note||'no candidates')}</td></tr>`; return; }
+  d.targets.forEach(t=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td><a href="${esc(t.url)}" target="_blank"><b>${esc(t.name)}</b></a>
+        <div class="mut" style="font-size:11px">${esc(t.description||'')}</div></td>
+      <td class="mut">${esc(t.language||'')}</td><td class="num">${t.stars}</td>
+      <td><span class="badge">${t.score}</span></td>
+      <td class="mut" style="font-size:12px">${esc(t.why||'')}</td>
+      <td><button class="btn primary" style="white-space:nowrap">Hunt →</button></td>`;
+    tr.querySelector('button').onclick=()=>launch(t.url,t.name);
+    tb.appendChild(tr);
+  });
+}
+async function launch(url,name){
+  const body={mode:'repo', url, provider:document.getElementById('provider').value||null,
+    model:document.getElementById('model').value||null,
+    campaign_minutes:Number(document.getElementById('cmin').value)||20, max_targets:3};
+  document.getElementById('status').innerHTML=`launching campaign on <b>${esc(name)}</b>…`;
+  const r=await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){ document.getElementById('status').textContent='error: '+(await r.text()); return; }
+  const {job_id}=await r.json();
+  document.getElementById('status').innerHTML=`campaign running — <a href="/run/${job_id}" target="_blank">watch ${esc(name)} →</a>`;
+}
+(async()=>{ if(await mount('hunt')){ loadProviders(); } })();
+</script>
+</body></html>
