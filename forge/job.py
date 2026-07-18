@@ -159,7 +159,7 @@ def lab_job(job_id: str, harness: str, *, artifacts_root: Optional[Path] = None,
 
 def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
              diff_ref: Optional[str] = None, seed_commit: Optional[str] = None,
-             seed_patch: str = "",
+             seed_patch: str = "", sanitizer: Optional[str] = None,
              artifacts_root: Optional[Path] = None, max_targets: int = 3,
              fuzz_time: int = 30, campaign_minutes: int = 0, escalate: bool = True,
              provider: Optional[str] = None, model: Optional[str] = None,
@@ -199,11 +199,12 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     # The reasoning tier (Phase I): understand the code, rank reachable sinks, and
     # AIM harness synthesis + fuzzing where a bug most likely hides. It spawns
     # harness-synth sub-agents, so it subsumes the plain-synth path.
-    discovery = [partial(VariantHunterAgent, repo=info, llm=llm,
-                         max_targets=max_targets, fuzz_time=fuzz_time,
-                         campaign_minutes=campaign_minutes,
-                         changed_functions=changed, seed_patch=patch,
-                         corpus_root=corpus_root)]
+    vh = dict(max_targets=max_targets, fuzz_time=fuzz_time,
+              campaign_minutes=campaign_minutes, changed_functions=changed,
+              seed_patch=patch, corpus_root=corpus_root)
+    if sanitizer:                          # e.g. "address" — hunt real corruption,
+        vh["sanitizer"] = sanitizer        # not benign UB that halts the fuzzer early
+    discovery = [partial(VariantHunterAgent, repo=info, llm=llm, **vh)]
     oracles: list[Oracle] = [SanitizerOracle()]
     escalation: list[Oracle] = [ControllabilityOracle()] if escalate else []
     return ctx, discovery, oracles, escalation, llm

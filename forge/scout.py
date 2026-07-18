@@ -51,6 +51,7 @@ class Target:
     language: str = ""
     description: str = ""
     topics: list = field(default_factory=list)
+    size_kb: int = 0
     oss_fuzzed: bool = False
     score: float = 0.0
     why: str = ""
@@ -58,8 +59,8 @@ class Target:
     def to_dict(self) -> dict:
         return {"name": self.name, "url": self.url, "stars": self.stars,
                 "language": self.language, "description": self.description[:200],
-                "oss_fuzzed": self.oss_fuzzed, "score": round(self.score, 2),
-                "why": self.why}
+                "size_kb": self.size_kb, "oss_fuzzed": self.oss_fuzzed,
+                "score": round(self.score, 2), "why": self.why}
 
 
 def _get(url: str, *, timeout: int = 20) -> Optional[object]:
@@ -130,6 +131,15 @@ def score_target(t: Target, oss: set[str]) -> tuple[float, str]:
         s += 0.5
     s += 1.0                                   # not in OSS-Fuzz → the whole point
     reasons.append("NOT in OSS-Fuzz")
+    # Buildability: small repos are usually single/few-file libraries that
+    # auto-build (the ones we CAN actually fuzz); huge repos need their own build
+    # system and stall the harness. This is the wall, so weight it heavily.
+    if 0 < t.size_kb <= 1500:
+        s += 3.0
+        reasons.append("small → auto-buildable")
+    elif t.size_kb > 20000:
+        s -= 3.0
+        reasons.append("large → hard to auto-build")
     return s, "; ".join(reasons)
 
 
@@ -149,6 +159,7 @@ def scout(*, limit: int = 15, cache_dir: Optional[Path] = None) -> dict:
                 language=it.get("language") or "",
                 description=it.get("description") or "",
                 topics=it.get("topics") or [],
+                size_kb=int(it.get("size", 0)),
                 oss_fuzzed=name in oss)
             t.score, t.why = score_target(t, oss)
             seen[full] = t

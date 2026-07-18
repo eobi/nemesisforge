@@ -197,6 +197,7 @@ class ScanReq(BaseModel):
     diff_ref: str | None = None      # continuous mode: hunt functions changed since
     seed_commit: str | None = None   # L3: variant-hunt from this repo's fix commit
     seed_patch: str | None = None    # L3: variant-hunt from a supplied patch diff
+    sanitizer: str | None = None     # e.g. "address" (only real corruption) vs +undefined
 
 
 # Input modes — how you point Forge at an asset.
@@ -292,7 +293,7 @@ async def api_scan(req: ScanReq, user: str = Depends(current_user)) -> dict:
             ctx, discovery, oracles, escalation, llm = repo_job(
                 job_id, req.url, ref=req.ref or None, artifacts_root=_RUNS,
                 diff_ref=req.diff_ref or None, seed_commit=req.seed_commit or None,
-                seed_patch=req.seed_patch or "",
+                seed_patch=req.seed_patch or "", sanitizer=req.sanitizer or None,
                 max_targets=req.max_targets or 3, fuzz_time=req.fuzz_time or 30,
                 campaign_minutes=req.campaign_minutes or 0,
                 provider=req.provider, model=req.model, api_key=req.api_key,
