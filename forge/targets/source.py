@@ -65,6 +65,14 @@ class SourceTarget:
         self._build_seq = itertools.count(1)
         self._lock = threading.Lock()
         self._obj_lock = threading.Lock()      # serialize library object compiles
+        # Phase N: an instrumented static archive built by the repo's OWN build
+        # system (make/cmake/autotools) plus its generated-header dirs. When set,
+        # EVERY build() links against it instead of compiling library sources
+        # file-by-file — the only way to reach hard, multi-file targets. Set once
+        # by repo_job; picked up transparently by discovery, co-driving, AND the
+        # oracle's replay (they all build through this shared target).
+        self.extra_link_objects: list[str] = []
+        self.extra_include_dirs: list[Path] = []
 
     def _newdir(self) -> Path:
         # Each build gets its OWN subdir so parallel builds (the LLM synth squad,
@@ -162,7 +170,8 @@ class SourceTarget:
 
         if cpp:                              # use the C++ driver so libc++ links
             compiler = _as_cxx(compiler)
-        incs = [f"-I{p}" for p in (include_dirs or [])]
+        incs = [f"-I{p}" for p in
+                list(include_dirs or []) + self.extra_include_dirs]
         # UBSan only warns by default; make it a hard, parseable crash so the
         # oracle can prove integer/UB bugs the same way it proves ASan crashes.
         recover = ["-fno-sanitize-recover=undefined"] if "undefined" in fsan else []
@@ -180,15 +189,32 @@ class SourceTarget:
             # multi-file library is recompiled on every harness attempt/repair and
             # the campaign drowns in builds instead of fuzzing. Only the harness
             # (+driver) recompiles per attempt; the link is cheap.
-            lib = list(target_sources or [])
+            # Phase N: if the target carries an instrumented archive from the repo's
+            # OWN build system, link THAT (it has every symbol) and SKIP compiling
+            # library sources file-by-file — which fails on hard multi-file libs and
+            # would duplicate symbols the archive already provides.
+            archive = list(self.extra_link_objects)
+            lib = [] if archive else list(target_sources or [])
             objs, objlog = (self._lib_objects(lib, compiler, common)
                             if lib else ([], ""))
             # Pre-built objects/archives from the repo's OWN build system (Phase N)
             # are linked directly — no recompile.
-            prebuilt = [str(o) for o in (extra_objects or [])]
+            prebuilt = archive + [str(o) for o in (extra_objects or [])]
             front = [str(src)] + ([str(driver)] if driver else [])
             argv = [compiler, *common, *front, *objs, *prebuilt, "-o", str(binary)]
             res = sb.run(argv, cwd=bdir, timeout=600)
+            # Safety net: if the build-system archive didn't satisfy the harness
+            # (e.g. cmake built only a partial lib), fall back to the proven
+            # file-by-file compile so an archive can never REGRESS a target that
+            # already worked. Never breaks the non-archive path.
+            if archive and (res.rc != 0 or not binary.exists()) and target_sources:
+                lib = list(target_sources)
+                objs, objlog = self._lib_objects(lib, compiler, common)
+                if objs:
+                    argv = [compiler, *common, *front, *objs,
+                            *[str(o) for o in (extra_objects or [])],
+                            "-o", str(binary)]
+                    res = sb.run(argv, cwd=bdir, timeout=600)
         finally:
             if prev_cpu is not None:
                 sb.cpu_s = prev_cpu

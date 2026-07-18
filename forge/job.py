@@ -176,6 +176,7 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
              seed_patch: str = "", sanitizer: Optional[str] = None,
              artifacts_root: Optional[Path] = None, max_targets: int = 3,
              fuzz_time: int = 30, campaign_minutes: int = 0, escalate: bool = True,
+             use_build_system: bool = True,
              provider: Optional[str] = None, model: Optional[str] = None,
              api_key: Optional[str] = None, base_url: Optional[str] = None):
     """Point Forge at a real open-source repo by URL: clone → the LLM synthesizes
@@ -194,6 +195,27 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     target = SourceTarget(root / job_id / "work", name=repo_name)
     ctx = JobContext(job_id, target=target, artifacts_root=root)
     ctx.repo = info                                  # for the visibility layer
+    # Phase N: build the repo with its OWN build system (make/cmake/autotools) +
+    # our instrumentation, then link every harness against the resulting archive.
+    # This is how OSS-Fuzz reaches HARD, multi-file targets a file-by-file compile
+    # can't — exactly where fresh zero-days survive. Best-effort and time-boxed: if
+    # the build system needs external deps or an exotic setup, we log and fall back
+    # to the file-by-file path (source.build keeps a per-build fallback too).
+    ctx.build_system = {"attempted": False, "ok": False}
+    if use_build_system:
+        from .ingest.build_system import build_library
+        cc = fuzzengine.find_libfuzzer_clang()
+        if cc:
+            prod = build_library(Path(info.root), compiler=cc,
+                                 sanitizer=(sanitizer or "address"), timeout=300)
+            ctx.build_system = {"attempted": True, "ok": bool(prod.ok),
+                                "system": prod.system,
+                                "archives": len(prod.archives)}
+            if prod.ok and prod.archives:
+                target.extra_link_objects = prod.link_inputs()
+                bdir = Path(info.root) / "_forge_build"
+                target.extra_include_dirs = [Path(info.root)] + (
+                    [bdir] if bdir.exists() else [])
     ctx.no_auto_strategist = True                    # variant-hunter IS the LLM tier
     # Phase L: seed the fuzzer from the repo's OWN test/sample inputs (huge cold-
     # start coverage win), and persist the corpus per-target so campaigns compound.
