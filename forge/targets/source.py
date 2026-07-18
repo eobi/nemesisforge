@@ -11,6 +11,7 @@ is the proof object the ladder climbs on.
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import itertools
 import threading
 from typing import Optional, Sequence
@@ -63,6 +64,7 @@ class SourceTarget:
         self.compiler = compiler
         self._build_seq = itertools.count(1)
         self._lock = threading.Lock()
+        self._obj_lock = threading.Lock()      # serialize library object compiles
 
     def _newdir(self) -> Path:
         # Each build gets its OWN subdir so parallel builds (the LLM synth squad,
@@ -73,6 +75,35 @@ class SourceTarget:
         bdir = self.workdir / f"b{n}"
         bdir.mkdir(parents=True, exist_ok=True)
         return bdir
+
+    def _lib_objects(self, sources, compiler: str, common: list):
+        """Compile each library source to a CACHED .o (keyed by path+mtime+flags),
+        so repeated harness builds link against prebuilt objects instead of
+        recompiling the whole library every time. Serialized so parallel harness
+        builds compile the library exactly once."""
+        cache = self.workdir / "_objcache"
+        objs: list[str] = []
+        logs: list[str] = []
+        with self._obj_lock:                 # compile-once across parallel builds
+            cache.mkdir(parents=True, exist_ok=True)
+            keyf = hashlib.sha1(("|".join(common) + "|" + compiler).encode()
+                                ).hexdigest()[:10]
+            for s in sources:
+                s = Path(s)
+                try:
+                    mt = int(s.stat().st_mtime)
+                except Exception:
+                    mt = 0
+                obj = cache / (hashlib.sha1(f"{s}|{mt}|{keyf}".encode()
+                                            ).hexdigest()[:16] + ".o")
+                if not obj.exists():
+                    r = self.sandbox.run([compiler, *common, "-c", str(s),
+                                          "-o", str(obj)], timeout=400)
+                    if r.rc != 0 or not obj.exists():
+                        logs.append(f"[lib skip {s.name}: {r.output[-160:]}]")
+                        continue
+                objs.append(str(obj))
+        return objs, "\n".join(logs)
 
     def build(self, harness_source: str, *, sanitizer: str = "address",
               target_sources: Optional[Sequence[Path]] = None,
@@ -98,7 +129,7 @@ class SourceTarget:
         src = bdir / (f"{_HARNESS}.cc" if cpp else f"{_HARNESS}.c")
         src.write_text(harness_source)
         binary = bdir / _HARNESS
-        sources = [str(src), *[str(p) for p in (target_sources or [])]]
+        driver = None
         compiler = self.compiler
 
         extra: list[str] = []
@@ -124,7 +155,6 @@ class SourceTarget:
         elif libfuzzer_driver:
             driver = bdir / f"{_DRIVER}.c"
             driver.write_text(fuzzengine.LF_DRIVER)
-            sources.append(str(driver))
             fsan = sanitizer
         else:
             fsan = sanitizer
@@ -135,22 +165,34 @@ class SourceTarget:
         # UBSan only warns by default; make it a hard, parseable crash so the
         # oracle can prove integer/UB bugs the same way it proves ASan crashes.
         recover = ["-fno-sanitize-recover=undefined"] if "undefined" in fsan else []
-        argv = [compiler, f"-fsanitize={fsan}", "-g", "-O1",
-                "-fno-omit-frame-pointer", *recover, *extra, *incs, *sources,
-                "-o", str(binary)]
-        # Compiling a large target (e.g. the SQLite amalgamation, ~260k LOC) can
-        # take minutes of CPU — far past the sandbox's per-run CPU cap meant for
-        # bounding *attacker* code. Lift the cap for the trusted compile step only.
+        common = [f"-fsanitize={fsan}", "-g", "-O1", "-fno-omit-frame-pointer",
+                  *recover, *extra, *incs]
+
+        # Lift the sandbox CPU cap for the trusted compile step (a big target like
+        # the SQLite amalgamation, or a whole library, needs minutes).
         sb = self.sandbox
         prev_cpu = getattr(sb, "cpu_s", None)
         if prev_cpu is not None:
             sb.cpu_s = max(prev_cpu, 300)
         try:
+            # Compile the LIBRARY sources to CACHED objects ONCE — otherwise a
+            # multi-file library is recompiled on every harness attempt/repair and
+            # the campaign drowns in builds instead of fuzzing. Only the harness
+            # (+driver) recompiles per attempt; the link is cheap.
+            lib = list(target_sources or [])
+            objs, objlog = (self._lib_objects(lib, compiler, common)
+                            if lib else ([], ""))
+            front = [str(src)] + ([str(driver)] if driver else [])
+            argv = [compiler, *common, *front, *objs, "-o", str(binary)]
             res = sb.run(argv, cwd=bdir, timeout=600)
         finally:
             if prev_cpu is not None:
                 sb.cpu_s = prev_cpu
         ok = res.rc == 0 and binary.exists()
+        if lib and objlog:
+            res = res.__class__(rc=res.rc, stdout=res.stdout,
+                                stderr=objlog + "\n" + res.stderr,
+                                timed_out=res.timed_out)
         return BuildResult(ok=ok, binary=binary if ok else None, log=res.output)
 
     def fuzz(self, binary: Path, *, corpus_dir: Optional[Path] = None,
