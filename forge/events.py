@@ -45,6 +45,16 @@ class EventType:
     ERROR = "error"
 
 
+# Global event observers (audit log, health tracker). Registered once at startup;
+# every bus appends fan out to them so cross-cutting concerns see all activity.
+_SINKS: list = []
+
+
+def add_event_sink(sink) -> None:
+    if sink not in _SINKS:
+        _SINKS.append(sink)
+
+
 @dataclass
 class Event:
     type: str
@@ -79,6 +89,13 @@ class EventBus:
                 q.put_nowait(ev)
             except asyncio.QueueFull:  # slow consumer — drop it, it can replay via since()
                 self._subscribers.discard(q)
+        # Fan every event out to global observers (audit trail + health tracking),
+        # so no component can fail silently. Sinks must never break the bus.
+        for sink in list(_SINKS):
+            try:
+                sink(ev)
+            except Exception:
+                pass
         if type in (EventType.JOB_DONE, EventType.ERROR):
             self._done = True
         return ev

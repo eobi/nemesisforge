@@ -76,6 +76,8 @@
          style="background:#0c111b;border:1px solid var(--edge);color:var(--txt);padding:7px 10px;border-radius:7px;width:150px" />
   <button class="run" onclick="scan()">▶ Run engagement</button>
   <button onclick="toggleRuns()" style="background:#0c111b;border:1px solid var(--edge);color:var(--txt);padding:7px 10px;border-radius:7px;cursor:pointer">History</button>
+  <button onclick="toggleHealth()" style="background:#0c111b;border:1px solid var(--edge);color:var(--txt);padding:7px 10px;border-radius:7px;cursor:pointer">Health <span id="healthDot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#3a4256;margin-left:3px;vertical-align:middle"></span></button>
+  <button id="logoutBtn" onclick="doLogout()" style="display:none;background:#0c111b;border:1px solid var(--edge);color:var(--muted);padding:7px 10px;border-radius:7px;cursor:pointer">Sign out</button>
   <span id="status">point at an asset + pick a brain, then run.</span>
 </div>
 <div id="harnessBox" style="display:none;padding:8px 20px;border-bottom:1px solid var(--edge)">
@@ -85,6 +87,23 @@
 <div id="runsPanel" style="display:none;position:fixed;top:110px;right:18px;width:420px;max-height:70vh;overflow:auto;background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:14px;z-index:20;box-shadow:0 8px 40px #000a">
   <h2 style="margin-top:0">Run history</h2>
   <div id="runs"><div style="color:var(--muted)">loading…</div></div>
+</div>
+<div id="healthPanel" style="display:none;position:fixed;top:110px;right:18px;width:460px;max-height:76vh;overflow:auto;background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:14px;z-index:20;box-shadow:0 8px 40px #000a">
+  <h2 style="margin-top:0">System health <span id="healthOverall" style="font-size:12px;font-weight:400"></span></h2>
+  <div style="color:var(--muted);font-size:11px;margin:-4px 0 8px">every agent + oracle is watched — a section that errors or goes silent turns amber/red here.</div>
+  <div id="healthSections"></div>
+  <h2 style="margin:14px 0 6px">Audit trail</h2>
+  <div id="auditFeed" style="font:11px ui-monospace"><div style="color:var(--muted)">loading…</div></div>
+</div>
+<div id="loginOverlay" style="display:none;position:fixed;inset:0;background:#060912ee;z-index:100;align-items:center;justify-content:center">
+  <form onsubmit="doLogin(event)" style="background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:26px 28px;width:320px;box-shadow:0 12px 60px #000c">
+    <div style="font:700 18px system-ui;letter-spacing:1px">NEMESIS <b style="color:var(--warn)">FORGE</b></div>
+    <div style="color:var(--muted);font-size:12px;margin:4px 0 16px">sign in to the engine</div>
+    <input id="lgUser" placeholder="username" autocomplete="username" style="width:100%;box-sizing:border-box;background:#0c111b;border:1px solid var(--edge);color:var(--txt);padding:9px 11px;border-radius:8px;margin-bottom:9px" />
+    <input id="lgPass" type="password" placeholder="password" autocomplete="current-password" style="width:100%;box-sizing:border-box;background:#0c111b;border:1px solid var(--edge);color:var(--txt);padding:9px 11px;border-radius:8px" />
+    <div id="lgErr" style="color:var(--bad);font-size:12px;min-height:16px;margin:8px 0"></div>
+    <button class="run" style="width:100%" type="submit">Sign in</button>
+  </form>
 </div>
 <main>
   <section class="col left">
@@ -282,7 +301,78 @@ async function scan(){
     }
   };
 }
-boot();
+// ── auth gate ──
+async function init(){
+  const r = await fetch('/api/me');
+  if(r.status===401){ document.getElementById('loginOverlay').style.display='flex';
+    document.getElementById('lgUser').focus(); return; }
+  const me = await r.json();
+  document.getElementById('loginOverlay').style.display='none';
+  if(me.auth){ document.getElementById('logoutBtn').style.display='';
+    document.getElementById('logoutBtn').textContent='Sign out ('+me.user+')'; }
+  await boot();
+  pollHealth();
+}
+async function doLogin(e){
+  e.preventDefault();
+  const username=document.getElementById('lgUser').value;
+  const password=document.getElementById('lgPass').value;
+  const r=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username,password})});
+  if(r.ok){ document.getElementById('lgErr').textContent=''; init(); }
+  else document.getElementById('lgErr').textContent='Invalid credentials';
+}
+async function doLogout(){ await fetch('/api/logout',{method:'POST'}); location.reload(); }
+
+// ── health + audit ──
+const HCOLOR={healthy:'#37d67a',degraded:'var(--warn)',failing:'var(--bad)',silent:'#e0a13a',idle:'#3a4256'};
+function toggleHealth(){ const p=document.getElementById('healthPanel');
+  const show=p.style.display!=='block'; p.style.display=show?'block':'none';
+  document.getElementById('runsPanel').style.display='none'; if(show) loadHealth(); }
+async function loadHealth(){
+  try{
+    const h=await (await fetch('/api/health')).json();
+    document.getElementById('healthOverall').innerHTML=
+      `· <b style="color:${HCOLOR[h.overall]||'#888'}">${(h.overall||'').toUpperCase()}</b>`;
+    const box=document.getElementById('healthSections'); box.innerHTML='';
+    if(!(h.sections||[]).length) box.innerHTML='<div style="color:var(--muted)">no activity yet</div>';
+    (h.sections||[]).forEach(s=>{
+      const el=document.createElement('div');
+      el.style.cssText='display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #141a26';
+      el.innerHTML=`<span style="width:9px;height:9px;border-radius:50%;background:${HCOLOR[s.status]||'#888'};flex:0 0 auto"></span>
+        <b style="flex:1">${esc(s.section)}</b>
+        <span style="color:var(--muted);font-size:11px">${s.events} ev${s.errors?` · <span style="color:var(--bad)">${s.errors} err</span>`:''}${s.idle_s!=null?` · ${s.idle_s}s idle`:''}</span>`;
+      if(s.last_error){ const e=document.createElement('div');
+        e.style.cssText='color:var(--bad);font-size:10px;margin:0 0 4px 17px;white-space:pre-wrap';
+        e.textContent=s.last_error; box.appendChild(el); box.appendChild(e); }
+      else box.appendChild(el);
+    });
+    loadAudit();
+  }catch(e){}
+}
+async function loadAudit(){
+  try{
+    const a=await (await fetch('/api/audit?limit=60')).json();
+    const box=document.getElementById('auditFeed'); box.innerHTML='';
+    (a.entries||[]).forEach(en=>{
+      const t=new Date((en.ts||0)*1000).toLocaleTimeString();
+      const bad=en.ok===false;
+      const el=document.createElement('div');
+      el.style.cssText='padding:2px 0;border-bottom:1px solid #10151f;color:'+(bad?'var(--bad)':'var(--txt)');
+      el.textContent=`${t}  ${en.action}  ${en.actor||''}  ${en.target||en.job_id||''}`;
+      box.appendChild(el);
+    });
+    if(!(a.entries||[]).length) box.innerHTML='<div style="color:var(--muted)">no audit entries yet</div>';
+  }catch(e){}
+}
+function pollHealth(){
+  const tick=async()=>{
+    try{ const h=await (await fetch('/api/health')).json();
+      document.getElementById('healthDot').style.background=HCOLOR[h.overall]||'#3a4256';
+      if(document.getElementById('healthPanel').style.display==='block') loadHealth();
+    }catch(e){} };
+  tick(); setInterval(tick, 5000);
+}
+init();
 </script>
 </body>
 </html>

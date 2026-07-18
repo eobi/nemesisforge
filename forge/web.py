@@ -11,10 +11,11 @@ import json
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
+from . import audit, auth
 from .events import bus_for
 from .job import lab_job, run_job
 
@@ -22,6 +23,73 @@ _UI = Path(__file__).resolve().parent.parent / "ui" / "index.html"
 _RUNS = Path(__file__).resolve().parent.parent / "runs"
 
 app = FastAPI(title="Nemesis Forge")
+
+# Wire the audit trail + health tracker to the event bus, and surface the login
+# credential if one had to be generated (so a fresh deploy is never wide open).
+audit.install(_RUNS / "audit.jsonl")
+
+
+@app.on_event("startup")
+def _announce_auth() -> None:
+    if auth.enabled():
+        gen = auth.ensure_default_password()
+        if gen:
+            print(f"[forge] no FORGE_USERS/FORGE_PASSWORD set — "
+                  f"login: admin / {gen}")
+    else:
+        print("[forge] AUTH DISABLED (FORGE_AUTH=off)")
+
+
+def current_user(request: Request) -> str:
+    """Auth dependency: resolve the session cookie to a username, else 401."""
+    if not auth.enabled():
+        return "anonymous"
+    user = auth.verify_token(request.cookies.get(auth.COOKIE, ""))
+    if not user:
+        raise HTTPException(401, "authentication required")
+    return user
+
+
+class LoginReq(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/login")
+def api_login(req: LoginReq, response: Response, request: Request) -> dict:
+    ip = request.client.host if request.client else "?"
+    if not auth.enabled() or auth.verify_credentials(req.username, req.password):
+        token = auth.make_token(req.username or "anonymous")
+        response.set_cookie(auth.COOKIE, token, httponly=True, samesite="lax",
+                            max_age=86400)
+        audit.audit() and audit.audit().record(
+            "login", actor=req.username, ok=True, ip=ip)
+        return {"ok": True, "user": req.username}
+    audit.audit() and audit.audit().record(
+        "login_failed", actor=req.username, ok=False, ip=ip)
+    raise HTTPException(401, "invalid credentials")
+
+
+@app.post("/api/logout")
+def api_logout(response: Response) -> dict:
+    response.delete_cookie(auth.COOKIE)
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def api_me(user: str = Depends(current_user)) -> dict:
+    return {"user": user, "auth": auth.enabled()}
+
+
+@app.get("/api/health")
+def api_health(user: str = Depends(current_user)) -> dict:
+    return audit.HEALTH.summary()
+
+
+@app.get("/api/audit")
+def api_audit(user: str = Depends(current_user), limit: int = 200) -> dict:
+    log = audit.audit()
+    return {"entries": log.recent(limit) if log else []}
 
 # Lab harnesses to demo the fleet end-to-end without an LLM or a real repo.
 PRESETS: dict[str, dict] = {
@@ -127,26 +195,31 @@ def index() -> str:
 
 
 @app.get("/api/presets")
-def api_presets() -> dict:
+def api_presets(user: str = Depends(current_user)) -> dict:
     return {"presets": [{"id": k, "label": v["label"]} for k, v in PRESETS.items()]}
 
 
 @app.get("/api/providers")
-def api_providers() -> dict:
+def api_providers(user: str = Depends(current_user)) -> dict:
     from .llm import list_providers
     return {"providers": list_providers()}
 
 
 @app.get("/api/modes")
-def api_modes() -> dict:
+def api_modes(user: str = Depends(current_user)) -> dict:
     return {"modes": MODES}
 
 
 @app.post("/api/scan")
-async def api_scan(req: ScanReq) -> dict:
+async def api_scan(req: ScanReq, user: str = Depends(current_user)) -> dict:
     from .llm import make_client
     from .job import binary_lab_job
     job_id = f"forge-{uuid.uuid4().hex[:10]}"
+    target_desc = req.url or req.ref or req.preset or req.mode
+    log = audit.audit()
+    if log:
+        log.record("scan", actor=user, job_id=job_id, mode=req.mode,
+                   target=target_desc, provider=req.provider)
 
     if req.mode == "repo" and req.url:
         from .job import repo_job
@@ -181,7 +254,7 @@ async def api_scan(req: ScanReq) -> dict:
 
 
 @app.get("/api/runs")
-def api_runs() -> dict:
+def api_runs(user: str = Depends(current_user)) -> dict:
     """History: every past run's metadata, newest first."""
     runs = []
     if _RUNS.exists():
@@ -197,7 +270,8 @@ def api_runs() -> dict:
 
 
 @app.get("/api/job/{job_id}/stream")
-async def api_stream(job_id: str) -> StreamingResponse:
+async def api_stream(job_id: str, user: str = Depends(current_user)
+                     ) -> StreamingResponse:
     bus = bus_for(job_id)
 
     async def gen():
@@ -208,7 +282,7 @@ async def api_stream(job_id: str) -> StreamingResponse:
 
 
 @app.get("/api/job/{job_id}")
-def api_job(job_id: str) -> dict:
+def api_job(job_id: str, user: str = Depends(current_user)) -> dict:
     ctx = _JOBS.get(job_id)
     findings_path = _RUNS / job_id / "findings.json"
     findings = json.loads(findings_path.read_text()) if findings_path.exists() else []
