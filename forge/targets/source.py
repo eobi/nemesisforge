@@ -11,6 +11,8 @@ is the proof object the ladder climbs on.
 from __future__ import annotations
 
 from pathlib import Path
+import itertools
+import threading
 from typing import Optional, Sequence
 
 from .. import triage
@@ -39,17 +41,26 @@ class SourceTarget:
         self.languages = list(languages)
         self.sandbox = sandbox or LocalSandbox()
         self.compiler = compiler
+        self._build_seq = itertools.count(1)
+        self._lock = threading.Lock()
 
     def build(self, harness_source: str, *, sanitizer: str = "address",
               target_sources: Optional[Sequence[Path]] = None) -> BuildResult:
-        src = self.workdir / f"{_HARNESS}.c"
+        # Each build gets its OWN subdir so parallel builds (the LLM synth squad,
+        # concurrent verification) never clobber each other's harness/binary —
+        # the source of intermittent "no crash" flakes.
+        with self._lock:
+            n = next(self._build_seq)
+        bdir = self.workdir / f"b{n}"
+        bdir.mkdir(parents=True, exist_ok=True)
+        src = bdir / f"{_HARNESS}.c"
         src.write_text(harness_source)
-        binary = self.workdir / _HARNESS
+        binary = bdir / _HARNESS
         argv = [self.compiler, f"-fsanitize={sanitizer}", "-g", "-O1",
                 "-fno-omit-frame-pointer", str(src),
                 *[str(p) for p in (target_sources or [])],
                 "-o", str(binary)]
-        res = self.sandbox.run(argv, cwd=self.workdir, timeout=180)
+        res = self.sandbox.run(argv, cwd=bdir, timeout=180)
         ok = res.rc == 0 and binary.exists()
         return BuildResult(ok=ok, binary=binary if ok else None, log=res.output)
 
