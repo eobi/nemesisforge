@@ -181,20 +181,64 @@ class HealthTracker:
                 "counts": dict(counts), "sections": sections}
 
 
+class EventPersister:
+    """Durably append every event to runs/<job_id>/events.jsonl, so the full
+    checkpoint timeline of a run is loadable in the frontend end-to-end — even
+    after it finishes or the server restarts."""
+
+    def __init__(self, runs_dir: Path) -> None:
+        self.runs_dir = Path(runs_dir)
+        self._locks: dict[str, threading.Lock] = {}
+        self._glock = threading.Lock()
+
+    def write(self, ev: Event) -> None:
+        if not ev.job_id:
+            return
+        with self._glock:
+            lock = self._locks.setdefault(ev.job_id, threading.Lock())
+        d = self.runs_dir / ev.job_id
+        line = json.dumps(ev.to_dict(), default=str)
+        with lock:
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                with (d / "events.jsonl").open("a") as fh:
+                    fh.write(line + "\n")
+            except Exception:
+                pass
+
+    def load(self, job_id: str, *, limit: int = 100000) -> list[dict]:
+        p = self.runs_dir / job_id / "events.jsonl"
+        if not p.exists():
+            return []
+        out = []
+        for ln in p.read_text(errors="replace").splitlines()[:limit]:
+            try:
+                out.append(json.loads(ln))
+            except Exception:
+                pass
+        return out
+
+
 # ── process-wide singletons, wired to the bus once ──
 _AUDIT: Optional[AuditLog] = None
+_EVENTS: Optional[EventPersister] = None
 HEALTH = HealthTracker()
 _wired = False
 
 
 def install(audit_path: Path) -> AuditLog:
-    """Wire the audit log + health tracker to the event bus (idempotent)."""
-    global _AUDIT, _wired
+    """Wire the audit log + health tracker + event persistence to the bus."""
+    global _AUDIT, _EVENTS, _wired
     _AUDIT = AuditLog(audit_path)
+    _EVENTS = EventPersister(Path(audit_path).parent)
     if not _wired:
         add_event_sink(_on_event)
         _wired = True
     return _AUDIT
+
+
+def events() -> Optional[EventPersister]:
+    return _EVENTS
 
 
 def audit() -> Optional[AuditLog]:
@@ -203,6 +247,8 @@ def audit() -> Optional[AuditLog]:
 
 def _on_event(ev: Event) -> None:
     HEALTH.feed(ev)
+    if _EVENTS is not None:
+        _EVENTS.write(ev)              # durable per-job checkpoint timeline
     # Persist the security-relevant milestones (not the high-volume chatter).
     if _AUDIT is not None and ev.type in (
             EventType.JOB_START, EventType.JOB_DONE, EventType.ERROR,

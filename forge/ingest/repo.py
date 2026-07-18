@@ -50,10 +50,25 @@ class RepoInfo:
 
 def clone(url: str, dest: Path, *, ref: Optional[str] = None,
           depth: int = 1, timeout: int = 180) -> RepoInfo:
-    """Shallow-clone `url` into `dest` (pinned to `ref` if given). Raises on
-    failure so the job surfaces a clear error instead of fuzzing nothing."""
+    """Fetch a source tree into `dest`. Accepts a git URL (shallow-cloned, pinned
+    to `ref` if given) OR a path to a local source directory the caller is
+    authorized to test (copied in). Raises on failure so the job surfaces a clear
+    error instead of fuzzing nothing."""
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
+
+    local = Path(url).expanduser()
+    if local.is_dir():                     # a local checkout / amalgamation dir
+        import shutil
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(local, dest, ignore=shutil.ignore_patterns(".git"))
+        info = RepoInfo(root=dest, url=str(local), ref="local")
+        info.build_system = detect_build_system(dest)
+        info.sources = rank_sources(dest)
+        info.headers = _find(dest, {".h", ".hpp"}, limit=200)
+        return info
+
     if not _is_safe_url(url):
         raise ValueError(f"refusing to clone non-git/opaque URL: {url!r}")
     argv = ["git", "clone", "--quiet", "--depth", str(depth),

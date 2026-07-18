@@ -1,0 +1,63 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Health · Nemesis Forge</title>
+<link rel="stylesheet" href="/app.css"><script src="/app.js"></script></head>
+<body>
+<div class="wrap">
+  <h1 class="page">System health</h1>
+  <div class="sub">Every agent and oracle is a watched section. A section that errors turns amber/red; one that stalls <b>while a job is running</b> turns silent. Between jobs, quiet is calm.</div>
+
+  <div class="row" style="margin-bottom:16px">
+    <div class="card" style="flex:1;min-width:220px"><div class="bd">
+      <div class="eyebrow">Overall</div>
+      <div id="overall" style="font-size:26px;font-weight:700;margin-top:6px">—</div>
+      <div id="running" class="mut" style="font-size:12px;margin-top:2px"></div>
+    </div></div>
+    <div class="card" style="flex:2;min-width:280px"><div class="bd">
+      <div class="eyebrow">Section rollup</div>
+      <div id="rollup" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"></div>
+    </div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="hd">Sections</div>
+    <table class="data"><thead><tr>
+      <th>Section</th><th>Status</th><th>Events</th><th>Errors</th><th>Idle</th><th>Last error</th>
+    </tr></thead><tbody id="sections"></tbody></table>
+  </div>
+
+  <div class="card">
+    <div class="hd">Audit trail</div>
+    <table class="data"><thead><tr>
+      <th style="width:150px">Time</th><th>Action</th><th>Actor</th><th>Target / job</th>
+    </tr></thead><tbody id="audit"></tbody></table>
+  </div>
+</div>
+<script>
+async function load(){
+  const h = await (await fetch('/api/health')).json();
+  const o=document.getElementById('overall');
+  o.textContent=(h.overall||'idle').toUpperCase(); o.style.color=HCOLOR[h.overall]||'#5c6675';
+  document.getElementById('running').textContent = h.running ? '● a job is running' : 'idle — no active job';
+  const c=h.counts||{}; const roll=document.getElementById('rollup'); roll.innerHTML='';
+  ['failing','degraded','silent','healthy','idle'].forEach(k=>{ if(c[k])
+    roll.insertAdjacentHTML('beforeend', `<span class="pill ${statusClass(k)}"><span class="d" style="background:currentColor"></span>${c[k]} ${k}</span>`); });
+  const tb=document.getElementById('sections'); tb.innerHTML='';
+  (h.sections||[]).forEach(s=>{ tb.insertAdjacentHTML('beforeend',
+    `<tr><td><b>${esc(s.section)}</b></td><td>${pill(s.status)}</td>
+     <td class="num">${s.events}</td><td class="num" style="color:${s.errors?'var(--bad)':'inherit'}">${s.errors}</td>
+     <td class="num mut">${s.idle_s!=null?s.idle_s+'s':'—'}</td>
+     <td style="color:var(--bad);font:11px var(--mono)">${esc(s.last_error||'')}</td></tr>`); });
+  if(!(h.sections||[]).length) tb.innerHTML='<tr><td colspan=6 class="empty">No activity yet.</td></tr>';
+
+  const a=(await (await fetch('/api/audit?limit=120')).json()).entries||[];
+  const at=document.getElementById('audit'); at.innerHTML='';
+  a.forEach(e=>{ at.insertAdjacentHTML('beforeend',
+    `<tr><td class="num mut">${fmtTime(e.ts)}</td>
+     <td style="color:${e.ok===false?'var(--bad)':'inherit'}"><code>${esc(e.action)}</code></td>
+     <td>${esc(e.actor||'')}</td><td class="mut">${esc(e.target||e.job_id||'')}</td></tr>`); });
+  if(!a.length) at.innerHTML='<tr><td colspan=4 class="empty">No audit entries yet.</td></tr>';
+}
+(async()=>{ if(await mount('health')){ load(); setInterval(load, 4000); } })();
+</script>
+</body></html>

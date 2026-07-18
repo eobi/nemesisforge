@@ -125,7 +125,12 @@ class Coordinator(Agent):
         agents = [f(self.ctx, parent_id=self.agent_id) for f in self.discovery]
         # the LLM brain runs ALONGSIDE the deterministic fuzzer: it fans out
         # specialist lens sub-agents whose hypotheses the oracles then prove.
-        if self.llm is not None and getattr(self.llm, "available", False):
+        # Skip it when the discovery agents are ALREADY an LLM reasoning tier
+        # (repo mode's variant-hunter) — else it just greps an empty scratch dir
+        # and emits blind hypotheses that clutter the run.
+        auto = self.llm is not None and getattr(self.llm, "available", False) \
+            and not getattr(self.ctx, "no_auto_strategist", False)
+        if auto:
             from .agents.llm_strategist import LLMStrategistAgent
             agents.append(LLMStrategistAgent(self.ctx, parent_id=self.agent_id,
                                              harness=self.harness, llm=self.llm))

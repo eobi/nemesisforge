@@ -179,6 +179,7 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     target = SourceTarget(root / job_id / "work", name=repo_name)
     ctx = JobContext(job_id, target=target, artifacts_root=root)
     ctx.repo = info                                  # for the visibility layer
+    ctx.no_auto_strategist = True                    # variant-hunter IS the LLM tier
     llm = make_client(provider, model, api_key, base_url)
     # Continuous mode (Phase K): if a diff ref is given, hunt only the functions
     # changed since it — catch a regression the day the commit lands.

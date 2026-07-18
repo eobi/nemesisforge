@@ -174,6 +174,8 @@ class ScanReq(BaseModel):
     model: str | None = None
     api_key: str | None = None
     base_url: str | None = None
+    fuzz_time: int | None = None     # per-target fuzz budget (repo mode)
+    max_targets: int | None = None   # how many sinks to harness (repo mode)
 
 
 # Input modes — how you point Forge at an asset.
@@ -189,9 +191,46 @@ MODES = [
 ]
 
 
+_UIDIR = Path(__file__).resolve().parent.parent / "ui"
+
+
+def _page(name: str) -> str:
+    return (_UIDIR / name).read_text()
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
-    return _UI.read_text()
+    return _page("console.html")
+
+
+@app.get("/activity", response_class=HTMLResponse)
+def page_activity() -> str:
+    return _page("activity.html")
+
+
+@app.get("/history", response_class=HTMLResponse)
+def page_history() -> str:
+    return _page("history.html")
+
+
+@app.get("/run/{job_id}", response_class=HTMLResponse)
+def page_run(job_id: str) -> str:
+    return _page("run.html")
+
+
+@app.get("/health", response_class=HTMLResponse)
+def page_health() -> str:
+    return _page("health.html")
+
+
+@app.get("/app.css")
+def app_css() -> Response:
+    return Response(_page("app.css"), media_type="text/css")
+
+
+@app.get("/app.js")
+def app_js() -> Response:
+    return Response(_page("app.js"), media_type="application/javascript")
 
 
 @app.get("/api/presets")
@@ -226,6 +265,7 @@ async def api_scan(req: ScanReq, user: str = Depends(current_user)) -> dict:
         try:
             ctx, discovery, oracles, escalation, llm = repo_job(
                 job_id, req.url, ref=req.ref or None, artifacts_root=_RUNS,
+                max_targets=req.max_targets or 3, fuzz_time=req.fuzz_time or 30,
                 provider=req.provider, model=req.model, api_key=req.api_key,
                 base_url=req.base_url)
         except Exception as e:
@@ -284,7 +324,54 @@ async def api_stream(job_id: str, user: str = Depends(current_user)
 @app.get("/api/job/{job_id}")
 def api_job(job_id: str, user: str = Depends(current_user)) -> dict:
     ctx = _JOBS.get(job_id)
-    findings_path = _RUNS / job_id / "findings.json"
+    d = _RUNS / job_id
+    findings_path = d / "findings.json"
     findings = json.loads(findings_path.read_text()) if findings_path.exists() else []
-    board = ctx.ladder.board() if ctx is not None else []
-    return {"job_id": job_id, "findings": findings, "board": board}
+    meta = {}
+    if (d / "metadata.json").exists():
+        try:
+            meta = json.loads((d / "metadata.json").read_text())
+        except Exception:
+            meta = {}
+    board = ctx.ladder.board() if ctx is not None else meta.get("board", [])
+    return {"job_id": job_id, "findings": findings, "board": board,
+            "meta": meta, "running": _is_running(job_id, meta)}
+
+
+@app.get("/api/job/{job_id}/events")
+def api_job_events(job_id: str, user: str = Depends(current_user),
+                   limit: int = 100000) -> dict:
+    """The full checkpoint timeline of a run — durable (persisted per event in
+    real time), so any job is loadable end-to-end even after it finishes."""
+    ep = audit.events()
+    evs = ep.load(job_id, limit=limit) if ep else []
+    return {"job_id": job_id, "events": evs, "running": _is_running(job_id)}
+
+
+def _is_running(job_id: str, meta: dict | None = None) -> bool:
+    if meta is None:
+        p = _RUNS / job_id / "metadata.json"
+        meta = json.loads(p.read_text()) if p.exists() else {}
+    return job_id in audit.HEALTH._active_jobs or meta.get("status") == "running"
+
+
+@app.get("/api/jobs")
+def api_jobs(user: str = Depends(current_user), limit: int = 200) -> dict:
+    """Every run — live + historical — for the Activity + History pages."""
+    jobs = []
+    if _RUNS.exists():
+        for dd in _RUNS.iterdir():
+            mp = dd / "metadata.json"
+            if not mp.exists():
+                continue
+            try:
+                m = json.loads(mp.read_text())
+            except Exception:
+                continue
+            m["running"] = _is_running(m.get("job_id", dd.name), m)
+            m["has_events"] = (dd / "events.jsonl").exists()
+            jobs.append(m)
+    jobs.sort(key=lambda r: r.get("job_id", ""), reverse=True)
+    running = [j for j in jobs if j.get("running")]
+    return {"jobs": jobs[:limit], "running": running,
+            "counts": {"total": len(jobs), "running": len(running)}}

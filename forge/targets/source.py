@@ -104,7 +104,18 @@ class SourceTarget:
         argv = [compiler, f"-fsanitize={fsan}", "-g", "-O1",
                 "-fno-omit-frame-pointer", *recover, *extra, *incs, *sources,
                 "-o", str(binary)]
-        res = self.sandbox.run(argv, cwd=bdir, timeout=180)
+        # Compiling a large target (e.g. the SQLite amalgamation, ~260k LOC) can
+        # take minutes of CPU — far past the sandbox's per-run CPU cap meant for
+        # bounding *attacker* code. Lift the cap for the trusted compile step only.
+        sb = self.sandbox
+        prev_cpu = getattr(sb, "cpu_s", None)
+        if prev_cpu is not None:
+            sb.cpu_s = max(prev_cpu, 300)
+        try:
+            res = sb.run(argv, cwd=bdir, timeout=600)
+        finally:
+            if prev_cpu is not None:
+                sb.cpu_s = prev_cpu
         ok = res.rc == 0 and binary.exists()
         return BuildResult(ok=ok, binary=binary if ok else None, log=res.output)
 
