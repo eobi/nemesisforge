@@ -31,6 +31,8 @@ class EventType:
     THINK = "think"                   # a ReAct reasoning step
     TOOL_CALL = "tool_call"           # an ACI tool was invoked
     TOOL_RESULT = "tool_result"
+    COVERAGE = "coverage"             # a coverage-guided fuzz progress snapshot
+    HARNESS = "harness"               # a fuzz harness was synthesized / built
     CANDIDATE = "candidate"           # a hypothesis was produced
     ORACLE_VERDICT = "oracle_verdict"  # a deterministic oracle decided
     RUNG_UP = "rung_up"               # a candidate climbed the ladder

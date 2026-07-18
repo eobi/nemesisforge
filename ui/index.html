@@ -219,6 +219,10 @@ function handle(ev){
       feedLine('think',`step ${D.step??''}`,`<b>${esc(agentName(ev))}</b> · ${esc(D.text)}`);renderAgents();break;
     case 'tool_call': feedLine('','tool',`<b>${esc(agentName(ev))}</b> · ${esc(D.tool)}`);break;
     case 'tool_result': feedLine('','tool·r',`${esc(D.tool)} ${D.crashed?'→ <span style="color:var(--accent)">CRASH '+esc(D.bug||'')+'</span>':(D.ok?'ok':'')}`);break;
+    case 'harness': feedLine('','harness',`<b>${esc(agentName(ev))}</b> · ${esc(D.engine||'harness')} built${D.sinks?` · ${D.sinks} target src`:''}`);break;
+    case 'coverage':
+      feedLine(D.crashed?'oracle':'','cov',
+        `<b>${esc(D.engine||'fuzz')}</b> · <span style="color:var(--accent)">cov ${D.cov}</span> ft ${D.features} · ${Number(D.execs||0).toLocaleString()} execs${D.exec_per_s?` (${Number(D.exec_per_s).toLocaleString()}/s)`:''}${D.corpus?` · corpus ${D.corpus}`:''}${D.crashed?' · <b style="color:var(--accent)">CRASH</b>':''}`);break;
     case 'candidate': feedLine('','candidate',`<code>${esc(D.title)}</code> <span style="color:var(--muted)">(${esc(D.bug_class)})</span>`);break;
     case 'oracle_verdict':
       feedLine(D.outcome==='proven'?'oracle':'bad','verdict',

@@ -39,8 +39,11 @@ class SanitizerOracle:
                            feedback="no harness or no target to build")
         input_bytes = self._input(pc)
 
+        # A libFuzzer candidate carries an LLVMFuzzerTestOneInput harness; replay
+        # it under a stdin driver on the default compiler (no fuzzer runtime).
         build = target.build(harness, sanitizer=pc.get("sanitizer", "address"),
-                             target_sources=pc.get("target_sources"))
+                             target_sources=pc.get("target_sources"),
+                             libfuzzer_driver=bool(pc.get("libfuzzer")))
         if not build.ok:
             return Verdict(Outcome.INCONCLUSIVE, Rung.UNVERIFIED, self.name,
                            feedback="build failed: " + build.log[-600:])

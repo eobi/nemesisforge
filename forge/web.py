@@ -51,6 +51,45 @@ int main(void){ char*b=malloc(32); char in[64]; long n=read(0,in,sizeof(in));
 int main(void){ char in[16]; long n=read(0,in,sizeof(in)); return (int)(n>0?in[0]:0); }
 """,
     },
+    # libFuzzer (LLVMFuzzerTestOneInput) presets — auto-routed to the real
+    # coverage-guided engine. The "guarded" one is the Phase-G headline: a bug
+    # behind a 4-byte magic that a blind length-sweep never reaches but a
+    # coverage-guided fuzzer discovers by climbing coverage.
+    "libfuzzer-guarded": {
+        "label": "Guarded heap overflow (libFuzzer — needs coverage to reach)",
+        "harness": r"""
+#include <stdint.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size){
+  if(size>=4 && data[0]=='F' && data[1]=='U' && data[2]=='Z' && data[3]=='Z'){
+    char *b = malloc(4);
+    memcpy(b, data, size);            /* heap-buffer-overflow when size>4 */
+    volatile int r = b[0]; (void)r; free(b);
+  }
+  return 0;
+}
+""",
+    },
+    "libfuzzer-parser": {
+        "label": "Length-field parser confusion (libFuzzer)",
+        "harness": r"""
+#include <stdint.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+/* first byte = declared length; trusts it over the real buffer size */
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size){
+  if(size<1) return 0;
+  unsigned want = data[0];
+  char *buf = malloc(16);
+  memcpy(buf, data+1, want);          /* OOB read+write when want>15 */
+  volatile int r = buf[0]; (void)r; free(buf);
+  return 0;
+}
+""",
+    },
 }
 
 # job_id → JobContext (so /api/job/{id} can read ladder/findings live)

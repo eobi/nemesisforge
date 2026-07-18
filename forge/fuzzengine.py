@@ -1,0 +1,135 @@
+"""libFuzzer engine plumbing — the real coverage-guided muscle.
+
+Discovery used to be a length-sweep (`A`, `AA`, `AAAA`…). This module gives Forge
+an actual coverage-guided fuzzer: compile a `LLVMFuzzerTestOneInput` harness with
+`-fsanitize=fuzzer,address` and let libFuzzer explore the input space with
+coverage feedback, a corpus, and a dictionary — the same engine OSS-Fuzz runs.
+
+Two toolchain facts this handles:
+  - Apple's `/usr/bin/clang` does NOT ship the libFuzzer runtime
+    (`libclang_rt.fuzzer_osx.a` is missing), so on macOS we must reach for a
+    Homebrew-LLVM clang. On Linux/Docker plain `clang` ships it. `find_libfuzzer_clang()`
+    resolves the right one (cached) and returns None when none is available, so
+    the caller degrades to the legacy fuzzer instead of crashing.
+  - The oracle re-verifies a crash by feeding one input over stdin. A libFuzzer
+    binary ignores stdin, so `LF_DRIVER` is a tiny standalone `main()` that reads
+    stdin (or a file arg) and calls `LLVMFuzzerTestOneInput` — letting the SAME
+    harness be built WITHOUT the fuzzer runtime (default compiler) for replay.
+"""
+from __future__ import annotations
+
+import platform
+import re
+import shutil
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+# Standalone driver: turns an LLVMFuzzerTestOneInput harness into a stdin/file
+# program so the oracle can replay one input under plain ASan (no fuzzer runtime).
+LF_DRIVER = r"""
+#include <stdint.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+extern int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+int main(int argc, char **argv) {
+  size_t cap = 1 << 16, n = 0;
+  unsigned char *buf = (unsigned char *)malloc(cap);
+  FILE *f = stdin;
+  if (argc > 1) { f = fopen(argv[1], "rb"); if (!f) return 0; }
+  size_t r;
+  while ((r = fread(buf + n, 1, cap - n, f)) > 0) {
+    n += r;
+    if (n == cap) { cap *= 2; buf = (unsigned char *)realloc(buf, cap); }
+  }
+  LLVMFuzzerTestOneInput(buf, n);
+  free(buf);
+  return 0;
+}
+"""
+
+_PROBE = (b"#include <stdint.h>\n#include <stddef.h>\n"
+          b"int LLVMFuzzerTestOneInput(const uint8_t*d,size_t n){return 0;}\n")
+
+_cache: Optional[str] = None
+
+
+def find_libfuzzer_clang() -> Optional[str]:
+    """Return the path to a clang that can link `-fsanitize=fuzzer`, or None.
+
+    Cached per process (the probe compiles a tiny harness once). Prefers a
+    Homebrew-LLVM clang on macOS, then whatever `clang` is on PATH."""
+    global _cache
+    if _cache is not None:
+        return _cache or None
+
+    candidates: list[str] = []
+    if platform.system() == "Darwin":
+        candidates += ["/opt/homebrew/opt/llvm/bin/clang",
+                       "/usr/local/opt/llvm/bin/clang"]
+    onpath = shutil.which("clang")
+    if onpath:
+        candidates.append(onpath)
+
+    for c in candidates:
+        if _links_fuzzer(c):
+            _cache = c
+            return c
+    _cache = ""
+    return None
+
+
+def _links_fuzzer(clang: str) -> bool:
+    if not (clang and (Path(clang).exists() or shutil.which(clang))):
+        return False
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "p.c"
+            src.write_bytes(_PROBE)
+            out = Path(d) / "p"
+            r = subprocess.run(
+                [clang, "-fsanitize=fuzzer,address", "-O0", str(src), "-o", str(out)],
+                capture_output=True, timeout=60)
+            return r.returncode == 0 and out.exists()
+    except Exception:
+        return False
+
+
+@dataclass
+class FuzzResult:
+    crashed: bool = False
+    crash_input: Optional[bytes] = None
+    coverage: int = 0          # libFuzzer `cov:` (edges hit)
+    features: int = 0          # libFuzzer `ft:` (features)
+    execs: int = 0             # total executed units
+    exec_per_s: int = 0
+    corpus: int = 0            # corpus entries at end
+    output: str = ""
+    rc: int = 0
+    timed_out: bool = False
+
+
+_COV = re.compile(r"cov:\s*(\d+)\s+ft:\s*(\d+)")
+_CORP = re.compile(r"corp:\s*(\d+)")
+_EXECS = re.compile(r"stat::number_of_executed_units:\s*(\d+)")
+_EPS = re.compile(r"stat::average_exec_per_sec:\s*(\d+)")
+
+
+def parse_stats(output: str) -> tuple[int, int, int, int, int]:
+    """Pull (cov, ft, execs, exec/s, corpus) from libFuzzer stderr."""
+    cov = ft = corp = execs = eps = 0
+    for m in _COV.finditer(output):
+        cov, ft = int(m.group(1)), int(m.group(2))   # last wins
+    cm = list(_CORP.finditer(output))
+    if cm:
+        corp = int(cm[-1].group(1))
+    em = _EXECS.search(output)
+    if em:
+        execs = int(em.group(1))
+    pm = _EPS.search(output)
+    if pm:
+        eps = int(pm.group(1))
+    return cov, ft, execs, eps, corp

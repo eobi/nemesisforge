@@ -14,7 +14,9 @@ from functools import partial
 from pathlib import Path
 from typing import Callable, Optional
 
+from . import fuzzengine
 from .agents.fuzz_discovery import FuzzDiscoveryAgent
+from .agents.libfuzzer_discovery import LibFuzzerDiscoveryAgent
 from .context import JobContext
 from .coordinator import Coordinator
 from .events import EventType
@@ -96,12 +98,31 @@ async def run_job(ctx: JobContext, *, discovery: list[Callable],
     return findings
 
 
+def _dict_from(harness: str, root: Path, job_id: str) -> Optional[Path]:
+    """Cheap structure hint: seed a libFuzzer dictionary from quoted string /
+    magic-byte literals in the harness so it clears guards faster."""
+    import re
+    toks = set(re.findall(r'"([ -~]{2,32})"', harness))
+    toks |= {t for t in re.findall(r"'([ -~]{2,8})'", harness)}
+    if not toks:
+        return None
+    d = root / job_id / "fuzz.dict"
+    d.parent.mkdir(parents=True, exist_ok=True)
+    d.write_text("\n".join(f'kw{i}="{t}"' for i, t in enumerate(sorted(toks))))
+    return d
+
+
 def lab_job(job_id: str, harness: str, *, artifacts_root: Optional[Path] = None,
             name: str = "lab-target", max_tries: int = 8, escalate: bool = True,
+            fuzz_time: int = 20,
             provider: Optional[str] = None, model: Optional[str] = None,
             api_key: Optional[str] = None, base_url: Optional[str] = None):
     """Assemble the end-to-end: fuzz + (optional) LLM brain → sanitizer-prove →
     escalate (+ LLM synthesis) toward a controlled primitive.
+
+    Discovery auto-routes: an `LLVMFuzzerTestOneInput` harness on a machine with a
+    libFuzzer-capable clang runs the real coverage-guided engine; otherwise the
+    legacy length-sweep fuzzer (so it always degrades, never breaks).
 
     Returns (ctx, discovery, oracles, escalation, llm). With a provider selected,
     the LLM brain runs alongside the fuzzer and LLM synthesis aids escalation;
@@ -111,7 +132,15 @@ def lab_job(job_id: str, harness: str, *, artifacts_root: Optional[Path] = None,
     root = artifacts_root or (Path.cwd() / "runs")
     target = SourceTarget(root / job_id / "work", name=name)
     ctx = JobContext(job_id, target=target, artifacts_root=root)
-    discovery = [partial(FuzzDiscoveryAgent, harness=harness, max_tries=max_tries)]
+
+    if "LLVMFuzzerTestOneInput" in harness and fuzzengine.find_libfuzzer_clang():
+        discovery = [partial(LibFuzzerDiscoveryAgent, harness=harness,
+                             corpus_dir=root / job_id / "corpus",
+                             dict_path=_dict_from(harness, root, job_id),
+                             max_total_time=fuzz_time)]
+    else:
+        discovery = [partial(FuzzDiscoveryAgent, harness=harness, max_tries=max_tries)]
+
     oracles: list[Oracle] = [SanitizerOracle()]
     escalation: list[Oracle] = [ControllabilityOracle()] if escalate else []
     llm = make_client(provider, model, api_key, base_url)
