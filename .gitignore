@@ -7,3 +7,5 @@ data/
 runs/
 *.db
 .DS_Store
+
+.env
