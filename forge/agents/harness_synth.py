@@ -69,6 +69,7 @@ class HarnessSynthAgent(Agent):
                  sources: Optional[list] = None, focus_note: str = "",
                  focus_function: str = "", guard_context: str = "",
                  dict_tokens: Optional[list] = None, repairs: int = 2,
+                 campaign_minutes: int = 0,
                  sanitizer: str = "address", corpus_tag: str = "h") -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.repo = repo or getattr(ctx, "repo", None)
@@ -77,6 +78,7 @@ class HarnessSynthAgent(Agent):
         self.fuzz_time = fuzz_time
         self.probe_time = probe_time
         self._repairs = repairs           # build-repair rounds for weak models
+        self.campaign_minutes = campaign_minutes
         self.focus_function = focus_function      # Phase J: aim the fuzzer here
         self.guard_context = guard_context        # sink source for LLM seed-craft
         self.dict_tokens = list(dict_tokens or [])
@@ -152,6 +154,7 @@ class HarnessSynthAgent(Agent):
                 include_dirs=incs, corpus_dir=corpus, llm=self.llm,
                 focus_function=self.focus_function, guard_context=self.guard_context,
                 dict_tokens=self.dict_tokens, sanitizer=self.sanitizer,
+                campaign_minutes=self.campaign_minutes,
                 rounds=rounds, round_time=max(6, self.fuzz_time // rounds))
             candidates.extend(await child.execute() or [])
 

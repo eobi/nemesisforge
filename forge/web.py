@@ -176,6 +176,7 @@ class ScanReq(BaseModel):
     base_url: str | None = None
     fuzz_time: int | None = None     # per-target fuzz budget (repo mode)
     max_targets: int | None = None   # how many sinks to harness (repo mode)
+    campaign_minutes: int | None = None  # deep campaign per harness (Phase L)
 
 
 # Input modes — how you point Forge at an asset.
@@ -266,6 +267,7 @@ async def api_scan(req: ScanReq, user: str = Depends(current_user)) -> dict:
             ctx, discovery, oracles, escalation, llm = repo_job(
                 job_id, req.url, ref=req.ref or None, artifacts_root=_RUNS,
                 max_targets=req.max_targets or 3, fuzz_time=req.fuzz_time or 30,
+                campaign_minutes=req.campaign_minutes or 0,
                 provider=req.provider, model=req.model, api_key=req.api_key,
                 base_url=req.base_url)
         except Exception as e:

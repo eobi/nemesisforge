@@ -106,6 +106,40 @@ def ubsan_fuzzer_flags(clang: str) -> Optional[list]:
     return result
 
 
+_msan_cache: dict[str, Optional[list]] = {}
+
+
+def msan_fuzzer_flags(clang: str) -> Optional[list]:
+    """Extra link flags to build `-fsanitize=fuzzer,memory` (MemorySanitizer, finds
+    uninitialized-memory reads), or None if unsupported here. MSan is mutually
+    exclusive with ASan and needs instrumented deps, so it typically works only on
+    Linux for self-contained targets; on macOS this returns None and the caller
+    degrades to ASan. Probed once + cached."""
+    if clang in _msan_cache:
+        return _msan_cache[clang]
+    result: Optional[list] = None
+    for extra in (["-fuse-ld=lld"], []):
+        if _builds_san(clang, "fuzzer,memory", extra):
+            result = extra
+            break
+    _msan_cache[clang] = result
+    return result
+
+
+def _builds_san(clang: str, fsan: str, extra: list) -> bool:
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "u.c"
+            src.write_bytes(_PROBE)
+            out = Path(d) / "u"
+            r = subprocess.run([clang, f"-fsanitize={fsan}", *extra, "-O0",
+                                str(src), "-o", str(out)],
+                               capture_output=True, timeout=90)
+            return r.returncode == 0 and out.exists()
+    except Exception:
+        return False
+
+
 def _builds_ubsan(clang: str, extra: list) -> bool:
     try:
         with tempfile.TemporaryDirectory() as d:

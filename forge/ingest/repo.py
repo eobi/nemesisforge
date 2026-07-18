@@ -145,6 +145,48 @@ def rank_sources(root: Path, *, limit: int = 60) -> list[Path]:
     return [p for _s, p in scored[:limit]]
 
 
+# Dirs that typically hold ready-made fuzz inputs / sample data — harvested as a
+# seed corpus (the opposite of _SKIP_DIRS, which deprioritizes them for RANKING).
+_SEED_DIRS = {"test", "tests", "testing", "corpus", "corpora", "seed", "seeds",
+              "fuzz", "fuzzing", "examples", "example", "samples", "sample",
+              "data", "fixtures", "testdata", "test_data", "inputs"}
+# Source/doc extensions to skip when harvesting (we want DATA, not code).
+_SKIP_SEED_EXT = {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".py", ".sh", ".md",
+                  ".txt", ".rst", ".am", ".in", ".m4", ".ac", ".yml", ".yaml",
+                  ".cmake", ".mk", ".pl", ".rb", ".go", ".rs", ".java", ".js"}
+
+
+def harvest_seeds(root: Path, *, max_files: int = 500,
+                  max_bytes: int = 128 * 1024) -> list[Path]:
+    """Collect the repo's OWN test/sample/corpus inputs to seed the fuzzer.
+
+    A cold empty corpus barely reaches shallow code; a parser library's own test
+    inputs jump the fuzzer straight into deep, valid-structure code paths — often
+    the single biggest coverage win. Heuristic + capped: small data files under
+    seed-ish directories, skipping source/doc."""
+    root = Path(root)
+    out: list[Path] = []
+    for p in sorted(root.rglob("*")):
+        if len(out) >= max_files:
+            break
+        try:
+            if not p.is_file():
+                continue
+            if p.name.startswith("."):            # skip dotfiles (.gitignore, …)
+                continue
+            parts = {x.lower() for x in p.relative_to(root).parts[:-1]}
+            if not (parts & _SEED_DIRS):          # only under seed-ish dirs
+                continue
+            if p.suffix.lower() in _SKIP_SEED_EXT:
+                continue
+            sz = p.stat().st_size
+            if 0 < sz <= max_bytes:
+                out.append(p)
+        except Exception:
+            continue
+    return out
+
+
 def changed_functions(root: Path, since_ref: str, *, timeout: int = 60) -> set[str]:
     """Function names touched by `git diff since_ref..HEAD` — the surface for
     continuous / variant-analysis mode (hunt the bug the day the commit lands).

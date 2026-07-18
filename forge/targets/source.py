@@ -105,6 +105,15 @@ class SourceTarget:
         if fuzzer:
             compiler = fuzzengine.find_libfuzzer_clang() or self.compiler
             sans = [s for s in sanitizer.split(",") if s]
+            if "memory" in sans:
+                # MSan is mutually exclusive with ASan and needs instrumented deps.
+                flags = fuzzengine.msan_fuzzer_flags(compiler)
+                if flags is None:                # unsupported (e.g. macOS) → degrade
+                    sans = [s for s in sans if s != "memory"] or ["address"]
+                else:
+                    sans = ["memory"] + [s for s in sans
+                                         if s in ("undefined",)]  # no address
+                    extra.extend(flags)
             if "undefined" in sans:
                 flags = fuzzengine.ubsan_fuzzer_flags(compiler)
                 if flags is not None:

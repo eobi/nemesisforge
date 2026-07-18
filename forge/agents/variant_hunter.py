@@ -26,6 +26,13 @@ from ..ladder import Candidate
 from .base import Agent
 from .harness_synth import HarnessSynthAgent
 
+def _slug(x) -> str:
+    """A filesystem-safe, STABLE corpus key per entry function (→ persistent corpus)."""
+    import re as _re
+    s = _re.sub(r"[^A-Za-z0-9_]", "_", str(x))[:48]
+    return f"fn_{s}_"
+
+
 _SYSTEM = (
     "You are a vulnerability researcher doing variant analysis on a C library. "
     "You are given the memory-safety sinks that are reachable from untrusted input, "
@@ -43,6 +50,7 @@ class VariantHunterAgent(Agent):
     def __init__(self, ctx, name: str = "variant-hunter", parent_id: str = "", *,
                  repo: Optional[_repo.RepoInfo] = None, llm=None,
                  max_sources: int = 8, max_targets: int = 3, fuzz_time: int = 30,
+                 campaign_minutes: int = 0, parallel: int = 3,
                  sanitizer: str = "address,undefined",
                  changed_functions: Optional[set] = None,
                  corpus_root: Optional[Path] = None) -> None:
@@ -52,6 +60,8 @@ class VariantHunterAgent(Agent):
         self.max_sources = max_sources
         self.max_targets = max_targets
         self.fuzz_time = fuzz_time
+        self.campaign_minutes = campaign_minutes   # Phase L: long persistent runs
+        self.parallel = max(1, parallel)           # concurrent harness campaigns
         self.sanitizer = sanitizer          # ASan + UBSan by default on repos
         # Continuous mode: when set, hunt ONLY sinks in functions changed by a diff
         # (catch the regression the day the commit lands — variant analysis's edge).
@@ -95,38 +105,51 @@ class VariantHunterAgent(Agent):
             self.log("reasoning produced no nominations — harnessing top sinks")
             nominated = self._auto_nominate(ranked)
 
-        # 3. aim a harness-synth + co-driving-fuzz sub-agent at each nominated
-        # source, carrying the sink's function + guard code so the loop can craft
-        # inputs that reach it (Phase J).
-        by_file: dict[str, dict] = {}
+        # 3. Fan out by ENTRY FUNCTION (breadth): one harness per nominated
+        # function — so even a single-file target yields MANY harnesses across
+        # distinct APIs, each aimed + guard-seeded — and fuzz them in PARALLEL.
+        targets: list[dict] = []
+        seen: set[tuple] = set()
         for nom in nominated:
             f = self._resolve_src(nom.get("file", ""))
-            if not f or str(f) in by_file:
-                continue
             fn = nom.get("function", "") or ""
+            key = (str(f), fn)
+            if not f or key in seen:
+                continue
+            seen.add(key)
             guard = cscan.func_body(ci, fn)
-            by_file[str(f)] = {
+            targets.append({
+                "src": f, "focus": fn if fn in ci.funcs else "",
                 "note": f"reach {fn or '?'}() — {nom.get('why','')}",
-                "focus": fn if fn in ci.funcs else "",
-                "guard": guard,
-                "dict": cscan.guard_tokens(guard) if guard else [],
-            }
+                "guard": guard, "dict": cscan.guard_tokens(guard) if guard else []})
             self.em.emit(EventType.CANDIDATE, title=f"suspect: {fn or '?'}",
                          bug_class="memory_safety", agent=self.name,
                          why=nom.get("why", ""))
+        targets = targets[:self.max_targets]
 
-        candidates: list[Candidate] = []
-        for i, (fpath, meta) in enumerate(list(by_file.items())[:self.max_targets]):
+        async def _hunt(t, i):
             child = self.child(
                 HarnessSynthAgent, repo=self.repo, llm=self.llm,
-                sources=[Path(fpath)], focus_note=meta["note"],
-                focus_function=meta["focus"], guard_context=meta["guard"],
-                dict_tokens=meta["dict"], fuzz_time=self.fuzz_time,
-                sanitizer=self.sanitizer, corpus_root=self.corpus_root,
-                corpus_tag=f"v{i}_")
-            candidates.extend(await child.execute() or [])
+                sources=[t["src"]], focus_note=t["note"],
+                focus_function=t["focus"], guard_context=t["guard"],
+                dict_tokens=t["dict"], fuzz_time=self.fuzz_time,
+                campaign_minutes=self.campaign_minutes, sanitizer=self.sanitizer,
+                corpus_root=self.corpus_root, corpus_tag=_slug(t["focus"] or i))
+            return await child.execute() or []
 
-        self.log(f"{len(candidates)} candidate(s) from {len(by_file)} reasoned target(s)")
+        sem = asyncio.Semaphore(self.parallel)
+        async def _guarded(t, i):
+            async with sem:
+                return await _hunt(t, i)
+        results = await asyncio.gather(*[_guarded(t, i) for i, t in enumerate(targets)],
+                                       return_exceptions=True)
+        candidates: list[Candidate] = []
+        for r in results:
+            if isinstance(r, list):
+                candidates.extend(r)
+
+        self.log(f"{len(candidates)} candidate(s) from {len(targets)} reasoned "
+                 f"entry-point(s), fuzzed in parallel")
         return candidates
 
     async def _reason(self, ranked: list[cscan.Sink]) -> list[dict]:
@@ -163,5 +186,6 @@ class VariantHunterAgent(Agent):
         """No sinks found (unusual) — fall back to plain harness synth."""
         child = self.child(HarnessSynthAgent, repo=self.repo, llm=self.llm,
                            max_targets=self.max_targets, fuzz_time=self.fuzz_time,
+                           campaign_minutes=self.campaign_minutes,
                            sanitizer=self.sanitizer, corpus_root=self.corpus_root)
         return await child.execute() or []

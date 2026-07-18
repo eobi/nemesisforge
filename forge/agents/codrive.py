@@ -42,7 +42,8 @@ class CoDrivingFuzzAgent(Agent):
                  focus_function: str = "", guard_context: str = "",
                  dict_tokens: Optional[Sequence[str]] = None,
                  sanitizer: str = "address", bug_class: str = "memory_safety",
-                 rounds: int = 4, round_time: int = 15, max_len: int = 4096) -> None:
+                 rounds: int = 4, round_time: int = 15, max_len: int = 4096,
+                 campaign_minutes: int = 0) -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.harness = harness
         self.target_sources = list(target_sources or [])
@@ -54,9 +55,15 @@ class CoDrivingFuzzAgent(Agent):
         self.dict_tokens = list(dict_tokens or [])
         self.sanitizer = sanitizer
         self.bug_class = bug_class
-        self.rounds = rounds
-        self.round_time = round_time
         self.max_len = max_len
+        # Campaign mode (Phase L): spread a long budget over more, longer rounds so
+        # the fuzzer can reach deep code — with the LLM still co-driving on stalls.
+        if campaign_minutes:
+            self.rounds = max(rounds, 8)
+            self.round_time = max(30, (campaign_minutes * 60) // self.rounds)
+        else:
+            self.rounds = rounds
+            self.round_time = round_time
 
     async def run(self) -> list[Candidate]:
         if fuzzengine.find_libfuzzer_clang() is None or not self.harness:
@@ -72,6 +79,13 @@ class CoDrivingFuzzAgent(Agent):
         if not build.ok:
             self.log("co-driving harness build failed", log=build.log[-300:])
             return []
+
+        # Seed the corpus from the repo's own test/sample inputs (harvested once at
+        # job start) — a cold empty corpus barely reaches shallow code; real inputs
+        # jump straight into deep, valid-structure paths.
+        seeded = self._seed_corpus()
+        if seeded:
+            self.log(f"seeded corpus with {seeded} repo test input(s)")
 
         dpath = cscan.write_dict(self.dict_tokens,
                                  self.corpus_dir.parent / f"{self.name}.dict") \
@@ -132,6 +146,28 @@ class CoDrivingFuzzAgent(Agent):
 
         self.log(f"co-driving loop ended without a crash (best cov={best_cov})")
         return []
+
+    def _seed_corpus(self) -> int:
+        """Copy the repo's harvested test/sample inputs into the (possibly
+        persistent) corpus. Content-hash names → idempotent across resumed runs."""
+        import hashlib
+        files = getattr(self.ctx, "seed_files", None) or []
+        if not files:
+            return 0
+        self.corpus_dir.mkdir(parents=True, exist_ok=True)
+        n = 0
+        for p in files:
+            try:
+                data = Path(p).read_bytes()
+                if not data or len(data) > self.max_len * 8:
+                    continue
+                dest = self.corpus_dir / f"seed_{hashlib.sha1(data).hexdigest()[:16]}"
+                if not dest.exists():
+                    dest.write_bytes(data)
+                    n += 1
+            except Exception:
+                continue
+        return n
 
     async def _craft_seed(self, fr, best_cov: int) -> Optional[bytes]:
         system = (

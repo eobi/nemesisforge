@@ -160,7 +160,7 @@ def lab_job(job_id: str, harness: str, *, artifacts_root: Optional[Path] = None,
 def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
              diff_ref: Optional[str] = None,
              artifacts_root: Optional[Path] = None, max_targets: int = 3,
-             fuzz_time: int = 30, escalate: bool = True,
+             fuzz_time: int = 30, campaign_minutes: int = 0, escalate: bool = True,
              provider: Optional[str] = None, model: Optional[str] = None,
              api_key: Optional[str] = None, base_url: Optional[str] = None):
     """Point Forge at a real open-source repo by URL: clone → the LLM synthesizes
@@ -180,6 +180,13 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     ctx = JobContext(job_id, target=target, artifacts_root=root)
     ctx.repo = info                                  # for the visibility layer
     ctx.no_auto_strategist = True                    # variant-hunter IS the LLM tier
+    # Phase L: seed the fuzzer from the repo's OWN test/sample inputs (huge cold-
+    # start coverage win), and persist the corpus per-target so campaigns compound.
+    ctx.seed_files = _repo.harvest_seeds(info.root)
+    if campaign_minutes:
+        ctx.budget.deadline_s = max(ctx.budget.deadline_s,
+                                    campaign_minutes * 60 + 600)
+    corpus_root = root / "_corpora" / repo_name      # STABLE across runs → resumes
     llm = make_client(provider, model, api_key, base_url)
     # Continuous mode (Phase K): if a diff ref is given, hunt only the functions
     # changed since it — catch a regression the day the commit lands.
@@ -189,8 +196,8 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     # harness-synth sub-agents, so it subsumes the plain-synth path.
     discovery = [partial(VariantHunterAgent, repo=info, llm=llm,
                          max_targets=max_targets, fuzz_time=fuzz_time,
-                         changed_functions=changed,
-                         corpus_root=root / job_id / "corpus")]
+                         campaign_minutes=campaign_minutes,
+                         changed_functions=changed, corpus_root=corpus_root)]
     oracles: list[Oracle] = [SanitizerOracle()]
     escalation: list[Oracle] = [ControllabilityOracle()] if escalate else []
     return ctx, discovery, oracles, escalation, llm
