@@ -43,6 +43,21 @@ _SYSTEM = (
     'Reply ONLY with JSON: {"harness":"<full C source>","entry":"<function you '
     'called>"}.')
 
+# Same brief, but for models that answer better in raw code than strict JSON.
+_SYSTEM_RAW = (
+    "You are a fuzzing engineer. Write ONE complete libFuzzer harness in PURE C "
+    "(C99) for the given library so it exercises an UNTRUSTED-INPUT function "
+    "(a parser/decoder/loader/exec that takes a buffer or string). Rules:\n"
+    "- Define exactly `int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)`.\n"
+    "- #include the library's public header (given) and any libc headers you use.\n"
+    "- If the API needs a C string, COPY the input into a malloc'd buffer of "
+    "size+1 and NUL-terminate it; free everything you allocate.\n"
+    "- Pass NULL for optional callbacks. Guard against size==0.\n"
+    "- PURE C ONLY: no C++ — do NOT use nullptr (use NULL), reinterpret_cast (use a "
+    "C cast), lambdas, templates, `extern \"C\"`, or `//`-only C++ idioms.\n"
+    "- No main(), no I/O, no network. Must compile as C against the header+source.\n"
+    "Output ONLY the C code inside a ```c code block — no prose.")
+
 
 class HarnessSynthAgent(Agent):
     kind = "harness_synth"
@@ -53,7 +68,7 @@ class HarnessSynthAgent(Agent):
                  probe_time: int = 6, corpus_root: Optional[Path] = None,
                  sources: Optional[list] = None, focus_note: str = "",
                  focus_function: str = "", guard_context: str = "",
-                 dict_tokens: Optional[list] = None,
+                 dict_tokens: Optional[list] = None, repairs: int = 2,
                  sanitizer: str = "address", corpus_tag: str = "h") -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.repo = repo or getattr(ctx, "repo", None)
@@ -61,6 +76,7 @@ class HarnessSynthAgent(Agent):
         self.max_targets = max_targets
         self.fuzz_time = fuzz_time
         self.probe_time = probe_time
+        self._repairs = repairs           # build-repair rounds for weak models
         self.focus_function = focus_function      # Phase J: aim the fuzzer here
         self.guard_context = guard_context        # sink source for LLM seed-craft
         self.dict_tokens = list(dict_tokens or [])
@@ -95,15 +111,37 @@ class HarnessSynthAgent(Agent):
                           + (f" via {header.name}" if header else ""))
             harness = await self._synth(src, header)
             if not harness:
+                # surface it — a model that can't write a harness is a real
+                # outcome, not a silent zero.
+                self.em.emit(EventType.HARNESS, source=src.name, built=False,
+                             coverage=0, reason="model produced no usable harness")
+                self.log(f"no usable harness synthesized for {src.name} "
+                         f"(model: {getattr(self.llm, 'model', '?')})")
                 continue
 
             corpus = self.corpus_root / f"{self.corpus_tag}{i}"
-            live, cov, why = await self._validate(harness, src, incs, corpus)
-            self.em.emit(EventType.HARNESS, source=src.name,
-                         entry=header.name if header else "", built=live,
-                         coverage=cov, reason=why)
+            # Build + probe with a repair loop: a weak model's first harness often
+            # has a small C bug (undeclared var, wrong API arity). Feed the compiler
+            # error back and let it fix — a couple of rounds turns "0 findings" into
+            # a real fuzz session.
+            live = False
+            for attempt in range(self._repairs + 1):
+                ok, live, cov, why, log = await self._build_probe(harness, src, incs, corpus)
+                self.em.emit(EventType.HARNESS, source=src.name,
+                             entry=header.name if header else "", built=ok,
+                             coverage=cov, reason=why, attempt=attempt)
+                if ok:
+                    break
+                if attempt < self._repairs:
+                    self.think(i, f"harness for {src.name} didn't compile — "
+                                  f"repairing (round {attempt + 1})")
+                    fixed = await self._repair(harness, log)
+                    if not fixed or fixed == harness:
+                        break
+                    harness = fixed
             if not live:
-                self.log(f"discarded dead/uncompilable harness for {src.name}: {why}")
+                self.log(f"no live harness for {src.name} after "
+                         f"{self._repairs} repair(s): {why}")
                 continue
 
             self.log(f"live harness for {src.name} (probe cov={cov}) — co-driving fuzz"
@@ -117,8 +155,8 @@ class HarnessSynthAgent(Agent):
                 rounds=rounds, round_time=max(6, self.fuzz_time // rounds))
             candidates.extend(await child.execute() or [])
 
-        self.log(f"{len(candidates)} candidate(s) from {self.max_targets} "
-                 f"synthesized harness(es)")
+        self.log(f"{len(candidates)} candidate(s) from {len(targets)} "
+                 f"harnessed source(s)")
         return candidates
 
     async def _synth(self, src: Path, header: Optional[Path]) -> str:
@@ -139,40 +177,68 @@ class HarnessSynthAgent(Agent):
             f"```c\n{_repo.entry_snippet(src)}\n```\n"
             f"{focus}"
             f"Write the libFuzzer harness.")
-        try:
-            parsed, _meta = await asyncio.to_thread(
-                self.llm.complete_json, _SYSTEM, prompt)
-        except Exception as e:
-            self.log(f"harness synth call failed: {type(e).__name__}")
-            return ""
+
+        # Local coder models (Ollama) reliably write C but NOT strict JSON, so ask
+        # for raw C first and extract it; frontier models can also answer as JSON.
         harness = ""
-        if isinstance(parsed, dict):
-            harness = parsed.get("harness") or ""
-        if not harness and isinstance(parsed, str):
-            harness = _extract_c(parsed)
-        harness = _extract_c(harness) if "```" in harness else harness
+        try:
+            raw = await asyncio.to_thread(self.llm.complete, _SYSTEM_RAW, prompt,
+                                          max_tokens=1600)
+            harness = _extract_c(raw or "")
+        except Exception as e:
+            self.log(f"harness synth (raw) failed: {type(e).__name__}")
+        if "LLVMFuzzerTestOneInput" not in harness:
+            try:
+                parsed, _m = await asyncio.to_thread(
+                    self.llm.complete_json, _SYSTEM, prompt)
+                if isinstance(parsed, dict) and parsed.get("harness"):
+                    harness = _extract_c(str(parsed["harness"]))
+            except Exception:
+                pass
+        if not harness or "LLVMFuzzerTestOneInput" not in harness:
+            return ""
         if header and header.name not in harness:
             harness = f'#include "{header.name}"\n' + harness
-        return harness if "LLVMFuzzerTestOneInput" in harness else ""
+        return harness
 
-    async def _validate(self, harness: str, src: Path, incs, corpus: Path
-                        ) -> tuple[bool, int, str]:
-        """Build the harness against the target source, then a short libFuzzer
-        probe. Live iff it compiles AND reaches non-trivial coverage (or crashes)."""
+    async def _build_probe(self, harness: str, src: Path, incs, corpus: Path
+                           ) -> tuple[bool, bool, int, str, str]:
+        """Build the harness against the target, then a short libFuzzer probe.
+        Returns (build_ok, live, cov, reason, build_log). Live iff it compiles AND
+        reaches non-trivial coverage (or crashes)."""
         target = self.ctx.target
         build = await asyncio.to_thread(
             target.build, harness, fuzzer=True, sanitizer=self.sanitizer,
             target_sources=[src], include_dirs=incs)
         if not build.ok:
-            return False, 0, "build failed: " + (build.log or "")[-300:]
+            return False, False, 0, "build failed", build.log or ""
         fr = await asyncio.to_thread(
             target.fuzz, build.binary, corpus_dir=corpus,
             max_total_time=self.probe_time)
         if fr.crashed:
-            return True, fr.coverage, "crashed during probe"
+            return True, True, fr.coverage, "crashed during probe", ""
         if fr.coverage >= _LIVE_COV:
-            return True, fr.coverage, "reaches target coverage"
-        return False, fr.coverage, f"trivial coverage ({fr.coverage}) — dead harness"
+            return True, True, fr.coverage, "reaches target coverage", ""
+        return True, False, fr.coverage, f"trivial coverage ({fr.coverage})", ""
+
+    async def _repair(self, harness: str, build_log: str) -> str:
+        """Hand the compiler errors back to the model to fix the harness."""
+        errs = "\n".join(l for l in build_log.splitlines()
+                         if "error:" in l or "warning:" in l)[:1200] \
+            or build_log[-1200:]
+        system = ("You are fixing a C libFuzzer harness that failed to compile. "
+                  "Return the CORRECTED complete harness as pure C in a ```c block "
+                  "— keep LLVMFuzzerTestOneInput, declare every variable, match the "
+                  "real API signatures, no C++.")
+        prompt = (f"Harness:\n```c\n{harness}\n```\n\nCompiler errors:\n{errs}\n\n"
+                  f"Return the fixed harness.")
+        try:
+            raw = await asyncio.to_thread(self.llm.complete, system, prompt,
+                                          max_tokens=1600)
+        except Exception:
+            return ""
+        fixed = _extract_c(raw or "")
+        return fixed if "LLVMFuzzerTestOneInput" in fixed else ""
 
     def _header_for(self, src: Path) -> Optional[Path]:
         stem = src.with_suffix(".h")

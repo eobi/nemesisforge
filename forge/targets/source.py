@@ -22,6 +22,24 @@ from .base import BuildResult, Observation
 
 _HARNESS = "forge_harness"
 _DRIVER = "forge_lf_driver"
+
+# Tokens that appear in C++ but never in valid C — so detection never mis-flags a
+# C harness (which would otherwise fail to link against the C target sources).
+_CPP_MARKERS = ('extern "C"', "nullptr", "reinterpret_cast", "static_cast",
+                "::", "template<", "template <", "std::")
+
+
+def _looks_cpp(src: str) -> bool:
+    return any(m in src for m in _CPP_MARKERS)
+
+
+def _as_cxx(compiler: str) -> str:
+    """Map a C clang path to its C++ driver (clang → clang++)."""
+    if compiler.endswith("clang"):
+        return compiler + "++"
+    if compiler.endswith("gcc"):
+        return compiler[:-3] + "g++"
+    return compiler + "++"
 # Deterministic, abort-on-report so we always get a parseable crash. Symbolization
 # is toggled per-run: discovery only needs "did it crash + what class" (fast,
 # symbolize=0), while the oracle wants frames for the rung decision (symbolize=1).
@@ -72,7 +90,12 @@ class SourceTarget:
             the oracle can replay one input on the DEFAULT compiler.
         """
         bdir = self._newdir()
-        src = bdir / f"{_HARNESS}.c"
+        # A synthesized harness may be C++ (OSS-Fuzz harnesses often are, and LLMs
+        # drift to nullptr/reinterpret_cast/lambdas). Detect it and compile the
+        # harness as C++ with the C++ driver so it links — the target C sources
+        # still compile as C by extension.
+        cpp = _looks_cpp(harness_source)
+        src = bdir / (f"{_HARNESS}.cc" if cpp else f"{_HARNESS}.c")
         src.write_text(harness_source)
         binary = bdir / _HARNESS
         sources = [str(src), *[str(p) for p in (target_sources or [])]]
@@ -97,6 +120,8 @@ class SourceTarget:
         else:
             fsan = sanitizer
 
+        if cpp:                              # use the C++ driver so libc++ links
+            compiler = _as_cxx(compiler)
         incs = [f"-I{p}" for p in (include_dirs or [])]
         # UBSan only warns by default; make it a hard, parseable crash so the
         # oracle can prove integer/UB bugs the same way it proves ASan crashes.
