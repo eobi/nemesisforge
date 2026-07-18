@@ -159,7 +159,7 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
 
     Returns (ctx, discovery, oracles, escalation, llm). Needs a model (harness
     synthesis is the LLM's job) and a libFuzzer-capable clang."""
-    from .agents.harness_synth import HarnessSynthAgent
+    from .agents.variant_hunter import VariantHunterAgent
     from .ingest import repo as _repo
     from .llm import make_client
 
@@ -170,7 +170,10 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     ctx = JobContext(job_id, target=target, artifacts_root=root)
     ctx.repo = info                                  # for the visibility layer
     llm = make_client(provider, model, api_key, base_url)
-    discovery = [partial(HarnessSynthAgent, repo=info, llm=llm,
+    # The reasoning tier (Phase I): understand the code, rank reachable sinks, and
+    # AIM harness synthesis + fuzzing where a bug most likely hides. It spawns
+    # harness-synth sub-agents, so it subsumes the plain-synth path.
+    discovery = [partial(VariantHunterAgent, repo=info, llm=llm,
                          max_targets=max_targets, fuzz_time=fuzz_time,
                          corpus_root=root / job_id / "corpus")]
     oracles: list[Oracle] = [SanitizerOracle()]

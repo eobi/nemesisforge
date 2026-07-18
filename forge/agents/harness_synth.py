@@ -50,7 +50,9 @@ class HarnessSynthAgent(Agent):
     def __init__(self, ctx, name: str = "harness-synth", parent_id: str = "", *,
                  repo: Optional[_repo.RepoInfo] = None, llm=None,
                  max_targets: int = 3, fuzz_time: int = 30,
-                 probe_time: int = 6, corpus_root: Optional[Path] = None) -> None:
+                 probe_time: int = 6, corpus_root: Optional[Path] = None,
+                 sources: Optional[list] = None, focus_note: str = "",
+                 corpus_tag: str = "h") -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.repo = repo or getattr(ctx, "repo", None)
         self.llm = llm
@@ -58,6 +60,11 @@ class HarnessSynthAgent(Agent):
         self.fuzz_time = fuzz_time
         self.probe_time = probe_time
         self.corpus_root = Path(corpus_root) if corpus_root else ctx.artifacts / "corpus"
+        # When the reasoning tier aims us at specific sources/sinks (Phase I), we
+        # harness exactly those with the suspect sink emphasized in the prompt.
+        self.sources = [Path(s) for s in sources] if sources else None
+        self.focus_note = focus_note
+        self.corpus_tag = corpus_tag
 
     async def run(self) -> list[Candidate]:
         if self.llm is None or not getattr(self.llm, "available", False):
@@ -75,7 +82,8 @@ class HarnessSynthAgent(Agent):
         incs = [self.repo.root] + sorted({p.parent for p in self.repo.headers})
         candidates: list[Candidate] = []
 
-        for i, src in enumerate(self.repo.sources[:self.max_targets]):
+        targets = self.sources or self.repo.sources[:self.max_targets]
+        for i, src in enumerate(targets):
             header = self._header_for(src)
             self.think(i, f"harnessing {src.name}"
                           + (f" via {header.name}" if header else ""))
@@ -83,7 +91,7 @@ class HarnessSynthAgent(Agent):
             if not harness:
                 continue
 
-            corpus = self.corpus_root / f"h{i}"
+            corpus = self.corpus_root / f"{self.corpus_tag}{i}"
             live, cov, why = await self._validate(harness, src, incs, corpus)
             self.em.emit(EventType.HARNESS, source=src.name,
                          entry=header.name if header else "", built=live,
@@ -109,12 +117,16 @@ class HarnessSynthAgent(Agent):
                 hdr_txt = header.read_text(errors="replace")[:6000]
             except Exception:
                 hdr_txt = ""
+        focus = (f"\nPRIORITY TARGET (the reasoning tier flagged this as the most "
+                 f"likely bug): {self.focus_note}\nWrite the harness so the fuzzer "
+                 f"REACHES that code path.\n") if self.focus_note else ""
         prompt = (
             f"Library: {self.repo.url}\n"
             f"Public header ({header.name if header else 'none'}):\n"
             f"```c\n{hdr_txt}\n```\n"
             f"Entry-point-bearing source: {src.name}\n"
             f"```c\n{_repo.entry_snippet(src)}\n```\n"
+            f"{focus}"
             f"Write the libFuzzer harness.")
         try:
             parsed, _meta = await asyncio.to_thread(
