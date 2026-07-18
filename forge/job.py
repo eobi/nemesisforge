@@ -147,6 +147,35 @@ def lab_job(job_id: str, harness: str, *, artifacts_root: Optional[Path] = None,
     return ctx, discovery, oracles, escalation, llm
 
 
+def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
+             artifacts_root: Optional[Path] = None, max_targets: int = 3,
+             fuzz_time: int = 30, escalate: bool = True,
+             provider: Optional[str] = None, model: Optional[str] = None,
+             api_key: Optional[str] = None, base_url: Optional[str] = None):
+    """Point Forge at a real open-source repo by URL: clone → the LLM synthesizes
+    coverage-validated fuzz harnesses for its untrusted-input entry points → the
+    libFuzzer engine fuzzes each → the sanitizer oracle proves every crash.
+
+    Returns (ctx, discovery, oracles, escalation, llm). Needs a model (harness
+    synthesis is the LLM's job) and a libFuzzer-capable clang."""
+    from .agents.harness_synth import HarnessSynthAgent
+    from .ingest import repo as _repo
+    from .llm import make_client
+
+    root = artifacts_root or (Path.cwd() / "runs")
+    info = _repo.clone(url, root / job_id / "repo", ref=ref)
+    target = SourceTarget(root / job_id / "work", name=info.root.name)
+    ctx = JobContext(job_id, target=target, artifacts_root=root)
+    ctx.repo = info                                  # for the visibility layer
+    llm = make_client(provider, model, api_key, base_url)
+    discovery = [partial(HarnessSynthAgent, repo=info, llm=llm,
+                         max_targets=max_targets, fuzz_time=fuzz_time,
+                         corpus_root=root / job_id / "corpus")]
+    oracles: list[Oracle] = [SanitizerOracle()]
+    escalation: list[Oracle] = [ControllabilityOracle()] if escalate else []
+    return ctx, discovery, oracles, escalation, llm
+
+
 def binary_lab_job(job_id: str, binary_path: str, *,
                    artifacts_root: Optional[Path] = None,
                    name: str = "binary-target", max_tries: int = 8

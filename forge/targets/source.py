@@ -58,6 +58,7 @@ class SourceTarget:
 
     def build(self, harness_source: str, *, sanitizer: str = "address",
               target_sources: Optional[Sequence[Path]] = None,
+              include_dirs: Optional[Sequence[Path]] = None,
               fuzzer: bool = False, libfuzzer_driver: bool = False) -> BuildResult:
         """Compile a harness under a sanitizer.
 
@@ -88,8 +89,9 @@ class SourceTarget:
         else:
             fsan = sanitizer
 
+        incs = [f"-I{p}" for p in (include_dirs or [])]
         argv = [compiler, f"-fsanitize={fsan}", "-g", "-O1",
-                "-fno-omit-frame-pointer", *sources, "-o", str(binary)]
+                "-fno-omit-frame-pointer", *incs, *sources, "-o", str(binary)]
         res = self.sandbox.run(argv, cwd=bdir, timeout=180)
         ok = res.rc == 0 and binary.exists()
         return BuildResult(ok=ok, binary=binary if ok else None, log=res.output)

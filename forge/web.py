@@ -99,7 +99,8 @@ _JOBS: dict[str, object] = {}
 class ScanReq(BaseModel):
     mode: str = "preset"              # how to point at the asset (see MODES)
     preset: str = "heap-overflow"
-    ref: str | None = None           # binary path (mode=binary)
+    ref: str | None = None           # binary path (mode=binary) OR git ref (mode=repo)
+    url: str | None = None           # git URL (mode=repo)
     harness: str | None = None       # custom C harness (mode=harness)
     provider: str | None = None      # LLM brain: portal selection
     model: str | None = None
@@ -113,8 +114,8 @@ MODES = [
      "input": "preset"},
     {"id": "harness", "label": "Custom C harness (paste source)", "input": "code"},
     {"id": "binary", "label": "Binary / firmware (path on disk)", "input": "path"},
-    {"id": "repo", "label": "Source repo (git URL) — needs harness synth",
-     "input": "url", "status": "beta"},
+    {"id": "repo", "label": "Source repo (git URL) — LLM synthesizes harnesses",
+     "input": "url"},
     {"id": "device", "label": "Android device (adb) — needs a device",
      "input": "serial", "status": "beta"},
 ]
@@ -147,7 +148,17 @@ async def api_scan(req: ScanReq) -> dict:
     from .job import binary_lab_job
     job_id = f"forge-{uuid.uuid4().hex[:10]}"
 
-    if req.mode == "binary" and req.ref:
+    if req.mode == "repo" and req.url:
+        from .job import repo_job
+        try:
+            ctx, discovery, oracles, escalation, llm = repo_job(
+                job_id, req.url, ref=req.ref or None, artifacts_root=_RUNS,
+                provider=req.provider, model=req.model, api_key=req.api_key,
+                base_url=req.base_url)
+        except Exception as e:
+            raise HTTPException(400, f"repo ingestion failed: {e}")
+        harness = ""
+    elif req.mode == "binary" and req.ref:
         ctx, discovery, oracles, escalation = binary_lab_job(
             job_id, req.ref, artifacts_root=_RUNS, name=req.ref.split("/")[-1])
         llm = make_client(req.provider, req.model, req.api_key, req.base_url)

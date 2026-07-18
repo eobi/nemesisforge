@@ -34,6 +34,7 @@ class LibFuzzerDiscoveryAgent(Agent):
                  dict_path: Optional[Path] = None, max_total_time: int = 20,
                  max_len: int = 4096,
                  target_sources: Optional[Sequence[Path]] = None,
+                 include_dirs: Optional[Sequence[Path]] = None,
                  bug_class: str = "memory_safety") -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.harness = harness
@@ -42,6 +43,7 @@ class LibFuzzerDiscoveryAgent(Agent):
         self.max_total_time = max_total_time
         self.max_len = max_len
         self.target_sources = list(target_sources or [])
+        self.include_dirs = list(include_dirs or [])
         self.bug_class = bug_class
 
     async def run(self) -> list[Candidate]:
@@ -56,7 +58,8 @@ class LibFuzzerDiscoveryAgent(Agent):
 
         build = await asyncio.to_thread(
             target.build, self.harness, fuzzer=True,
-            target_sources=self.target_sources or None)
+            target_sources=self.target_sources or None,
+            include_dirs=self.include_dirs or None)
         if not build.ok:
             self.log("libFuzzer harness build failed", log=build.log[-400:])
             return []
@@ -103,6 +106,8 @@ class LibFuzzerDiscoveryAgent(Agent):
                             "input_b64": base64.b64encode(inp).decode(),
                             "libfuzzer": True,
                             "target_sources": [str(p) for p in self.target_sources]
+                            or None,
+                            "include_dirs": [str(p) for p in self.include_dirs]
                             or None},
             crash={"bug_type": crash.bug_type, "stack_hash": crash.stack_hash},
         )

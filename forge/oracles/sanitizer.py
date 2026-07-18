@@ -43,6 +43,7 @@ class SanitizerOracle:
         # it under a stdin driver on the default compiler (no fuzzer runtime).
         build = target.build(harness, sanitizer=pc.get("sanitizer", "address"),
                              target_sources=pc.get("target_sources"),
+                             include_dirs=pc.get("include_dirs"),
                              libfuzzer_driver=bool(pc.get("libfuzzer")))
         if not build.ok:
             return Verdict(Outcome.INCONCLUSIVE, Rung.UNVERIFIED, self.name,

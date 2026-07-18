@@ -256,12 +256,15 @@ async function scan(){
   setStatus('queuing…');
   const mode=document.getElementById('mode').value;
   const preset=document.getElementById('preset').value;
-  const ref=document.getElementById('ref').value||null;
+  const refval=document.getElementById('ref').value||null;
+  // the shared text input holds a git URL in repo mode, a path/serial otherwise.
+  const url=mode==='repo'?refval:null;
+  const ref=mode==='repo'?null:refval;
   const harness=document.getElementById('harness').value||null;
   const provider=document.getElementById('provider').value||null;
   const model=document.getElementById('model').value||null;
   const api_key=document.getElementById('apikey').value||null;
-  const {job_id}=await (await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode,preset,ref,harness,provider,model,api_key})})).json();
+  const {job_id}=await (await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode,preset,ref,url,harness,provider,model,api_key})})).json();
   if(ES)ES.close();
   ES=new EventSource(`/api/job/${job_id}/stream`);
   ES.onmessage=async m=>{
