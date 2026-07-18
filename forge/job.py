@@ -9,6 +9,7 @@ agent + the sanitizer oracle.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, is_dataclass
 from functools import partial
 from pathlib import Path
@@ -163,8 +164,9 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     from .llm import make_client
 
     root = artifacts_root or (Path.cwd() / "runs")
-    info = _repo.clone(url, root / job_id / "repo", ref=ref)
-    target = SourceTarget(root / job_id / "work", name=info.root.name)
+    repo_name = re.sub(r"\.git$", "", url.rstrip("/").split("/")[-1]) or "repo"
+    info = _repo.clone(url, root / job_id / repo_name, ref=ref)
+    target = SourceTarget(root / job_id / "work", name=repo_name)
     ctx = JobContext(job_id, target=target, artifacts_root=root)
     ctx.repo = info                                  # for the visibility layer
     llm = make_client(provider, model, api_key, base_url)
