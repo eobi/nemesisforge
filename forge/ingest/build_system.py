@@ -55,7 +55,7 @@ def _has_main(obj: Path) -> bool:
 
 
 def _collect(build_dir: Path, root: Path, extra_link: Sequence[str]) -> BuildProduct:
-    from .repo import _SKIP_DIRS
+    from .repo import _NONLIB_DIRS as _SKIP_DIRS
     archives = [p for p in build_dir.rglob("*.a")
                 if not any(x.lower() in _SKIP_DIRS
                            for x in p.relative_to(build_dir).parts[:-1])]

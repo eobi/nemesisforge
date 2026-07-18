@@ -31,6 +31,15 @@ _SKIP_DIRS = {"test", "tests", "testing", "example", "examples", "demo", "demos"
               "benchmark", "benchmarks", "fuzz", "fuzzing", "doc", "docs",
               ".git", "build", "cmake", "contrib", "tools"}
 
+# Dirs that are NOT part of the library's linkable code. Distinct from _SKIP_DIRS
+# (which deprioritizes for target RANKING): here we KEEP deps/vendor/third_party/
+# external/contrib, because a vendored library (e.g. librdb's deps/redis: crc64,
+# d2string, listpack) MUST be linked or the harness fails with undefined symbols.
+# We only drop dirs that hold non-library code (tests/examples/benchmarks/docs/build).
+_NONLIB_DIRS = {"test", "tests", "testing", "example", "examples", "demo", "demos",
+                "bench", "benchmark", "benchmarks", "fuzz", "fuzzing", "doc", "docs",
+                ".git", "build"}
+
 _SRC_EXT = {".c", ".cc", ".cpp", ".cxx"}
 # Function-name signals that a source parses / decodes untrusted input.
 _ENTRY_HINTS = re.compile(
@@ -253,14 +262,20 @@ def library_sources(root: Path, *, limit: int = 250) -> list[Path]:
     """ALL of a library's own .c/.cc files (so a harness against a MULTI-file
     library LINKS — mpack/canboat/ISOBMFF, not just single-file cJSON/amalgamations).
     Excludes test/example/fuzz dirs and any file with its own main() (which would
-    clash with libFuzzer's main)."""
+    clash with libFuzzer's main) — but KEEPS vendored deps/, which must be linked
+    or the harness fails with undefined symbols (librdb's deps/redis, etc.)."""
     out: list[Path] = []
-    for p in _find(root, _SRC_EXT, limit=2000):
+    for p in sorted(root.rglob("*")):
+        if p.suffix.lower() not in _SRC_EXT:
+            continue
+        parts = {part.lower() for part in p.relative_to(root).parts[:-1]}
+        if parts & _NONLIB_DIRS:                       # tests/examples/benches only
+            continue
         try:
             text = p.read_text(errors="replace")
         except Exception:
             continue
-        if re.search(r"\bint\s+main\s*\(", text):     # would clash with libFuzzer
+        if re.search(r"\bint\s+main\s*\(", text):      # would clash with libFuzzer
             continue
         out.append(p)
         if len(out) >= limit:
