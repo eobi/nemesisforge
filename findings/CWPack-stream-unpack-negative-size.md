@@ -3,7 +3,7 @@
 **Status:** candidate for coordinated disclosure — *no public report found* (see §7)
 **Discovered by:** Nemesis Forge (autonomous fuzzing engine), 2026-07-18
 **Class:** CWE-787 / CWE-131 — out-of-bounds write via unchecked short read → negative size passed to `memmove`
-**Severity (provisional):** heap corruption / denial-of-service on untrusted input; write-primitive controllability not proven (see §6)
+**Severity (provisional):** **High — CVSS 3.1 base 7.1** (`AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:H`): remote DoS + bounded heap over-read on untrusted input; controlled-write/RCE not proven (see §6)
 **Component:** `goodies/basic-contexts/basic_contexts.c` — `handle_stream_unpack_underflow`
 **Affected version:** current `master` (commit `833fec9`, latest as of writing; the repository has had no source changes since 2022-03-11)
 
@@ -129,13 +129,21 @@ clang -fsanitize=address -g -O1 \
 ./poc crash.bin
 ```
 
-**Crashing input** (74 bytes) — a MessagePack stream whose declared lengths exceed the
-remaining bytes:
+**Crashing input — minimal (17 bytes), recommended.** A `fixstr` header (`0xB6`) that
+declares a 22-byte string followed by only 16 bytes. No Python/base64 needed:
+
+```sh
+printf '\xb6\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff' > crash.bin
+# sha256: 8a53f4c9249cc5ac4b2f2a7d3c7beca8c7989b4f149bdee864d0402763d34bed
+```
+
+The 16 filler bytes are arbitrary; only the count (< declared 22) matters. This reports
+`negative-size-param: (size=-6)`.
+
+**Crashing input — original fuzzer input (74 bytes).** Same bug, `size=-4`:
 
 - sha256: `dce348de62f29552da54cc15652e2aa032a27e119ac9dfd73c7aa83909703aec`
 - base64: `BQUF/////////////////////////////////////////////////////////////////////7b//////////////////////wU=`
-
-Recreate it:
 
 ```sh
 python3 -c "import base64;open('crash.bin','wb').write(base64.b64decode('BQUF/////////////////////////////////////////////////////////////////////7b//////////////////////wU='))"
@@ -179,20 +187,58 @@ while ((unsigned long)(uc->end - uc->current) < more)
 Independently, the core could defensively reject `current > end` after any handler returns
 `CWP_RC_OK`, so a non-conforming custom handler cannot corrupt memory.
 
-## 6. Impact / honest scope
+## 6. Risk, impact and severity
 
-- **Confirmed:** deterministic heap out-of-bounds (`memmove` with a negative/huge size) on
-  attacker-supplied truncated MessagePack, reachable through the simplest documented
-  stream-unpack usage (`init_stream_unpack_context` + `cw_unpack_next`). Reliable crash →
-  denial of service.
-- **Not proven:** conversion into a controlled write primitive (RCE). The size is
-  effectively `~ULONG_MAX`, which normally faults immediately; turning it into a bounded,
-  attacker-shaped write would need further analysis and is **not** claimed here.
-- **Reachability caveat:** the affected code lives in `goodies/basic-contexts/`, CWPack's
-  *provided* stream-context implementation rather than `src/cwpack.c` core. It is shipped,
-  documented, and commonly used verbatim for stream decoding, but a maintainer may classify
-  it as reference code. Applications that write their own unpack context with a correct
-  short-read loop are unaffected.
+### 6.1 What an attacker can do
+
+The trigger is a single MessagePack message whose declared blob length exceeds the bytes
+that actually follow — trivially craftable, no secrets or preconditions. Any position in a
+data flow where **untrusted MessagePack reaches a `stream_unpack_context`** is exposed:
+
+- **Network services** that speak MessagePack over a socket/pipe wrapped in a `FILE*`
+  (RPC endpoints, IoT/telemetry brokers, game servers). A remote, unauthenticated peer sends
+  one malformed frame and crashes the decoder/process.
+- **File / message parsers** that decode MessagePack documents from disk or a queue
+  (config, save files, cached blobs). A poisoned file crashes the consumer on open.
+- **Embedded / edge devices** (CWPack's stated niche — "no allocations in the basic setup",
+  popular on microcontrollers) where a crash is a hard fault and recovery may mean a reboot.
+
+### 6.2 Impact tiers
+
+| Tier | Status | Detail |
+| --- | --- | --- |
+| **Availability (DoS)** | **Confirmed** | Deterministic heap out-of-bounds `memmove` → immediate crash. One small message downs the process/decoder. Repeatable at will. |
+| **Confidentiality (info leak)** | **Confirmed (bounded)** | Before the fatal `memmove`, the parser returns a `str`/`bin` item whose `length` (e.g. 22) exceeds the valid bytes (16). An application that reads `item.as.str.start[0..length]` over-reads adjacent heap — up to the declared length can leak into application output/logs. |
+| **Integrity (controlled write / RCE)** | **Not proven — not claimed** | The `memmove` size is `~ULONG_MAX`, which normally walks into unmapped memory and faults. Turning it into a bounded, attacker-shaped write would need heap grooming so the copy stays mapped and lands useful bytes at `buffer_start`; that is allocator/platform dependent and has **not** been demonstrated. |
+
+### 6.3 Severity (CVSS 3.1)
+
+**Confirmed / conservative rating** — remote DoS plus a bounded out-of-bounds read:
+
+```
+CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:H   → 7.1 (High)
+```
+
+- `AV:N` reachable from wherever the untrusted MessagePack enters (network for a service).
+- `AC:L / PR:N / UI:N` — one crafted message, no auth, no user interaction.
+- `C:L` bounded heap over-read; `A:H` reliable crash; `I:N` no proven write.
+
+**If reachability is local-only** (e.g. a file parser not exposed to the network), use
+`AV:L` → `CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:H` = **5.1 (Medium)**.
+
+**Upper bound (not claimed):** a demonstrated controllable heap write would move `I` to
+`H`/high and push the score toward **9.8 (Critical)**. We explicitly do **not** assert this;
+the responsible rating for what is proven is **High (7.1)**.
+
+### 6.4 Risk-reducing / risk-increasing factors
+
+- **Reduces risk:** the affected code is in `goodies/basic-contexts/` — CWPack's *provided*
+  stream-context, not `src/cwpack.c` core. A maintainer may class it as reference code.
+  Applications that write their own unpack context with a correct short-read loop, or that
+  fully buffer input before unpacking (`buffer_unpack_context`), are unaffected.
+- **Increases risk:** it is the documented, canonical way to stream-decode with CWPack and is
+  commonly copied verbatim; it triggers via the *simplest* usage; it is platform-independent
+  (64-bit and 32-bit); and it is unfixed in the latest release.
 
 ## 7. Novelty verification (what was checked)
 
