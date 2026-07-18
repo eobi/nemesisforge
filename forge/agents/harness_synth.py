@@ -226,9 +226,26 @@ class HarnessSynthAgent(Agent):
                 pass
         if not harness or "LLVMFuzzerTestOneInput" not in harness:
             return ""
+        harness = self._strip_bad_includes(harness)
         if header and header.name not in harness:
             harness = f'#include "{header.name}"\n' + harness
         return harness
+
+    def _strip_bad_includes(self, harness: str) -> str:
+        """Drop hallucinated LOCAL includes (#include "config.h" and friends) that
+        don't correspond to any header in the repo — a frequent LLM slip that fails
+        the build on line 1 before the repair loop even helps. Keeps every system
+        <...> include and every real repo header (matched by basename)."""
+        valid = {h.name for h in (self.repo.headers or [])}
+        if not valid:                        # unknown header set → don't touch it
+            return harness
+        out = []
+        for line in harness.splitlines():
+            m = re.match(r'\s*#\s*include\s*"([^"]+)"', line)
+            if m and m.group(1).split("/")[-1] not in valid:
+                continue                     # hallucinated / unresolvable local include
+            out.append(line)
+        return "\n".join(out)
 
     async def _build_probe(self, harness: str, src: Path, incs, corpus: Path
                            ) -> tuple[bool, bool, int, str, str]:
