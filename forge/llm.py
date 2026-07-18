@@ -24,6 +24,10 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional, Protocol, runtime_checkable
 
+from .config import load_env
+
+load_env()   # map the INI .env into provider env vars at import
+
 
 @runtime_checkable
 class LLMClient(Protocol):
@@ -46,6 +50,11 @@ PROVIDERS: dict[str, dict] = {
         "label": "OpenAI (GPT)", "env": "OPENAI_API_KEY",
         "models": ["gpt-5.1", "gpt-5.1-codex", "o4"],
         "kind": "openai", "base": "https://api.openai.com"},
+    "gemini": {
+        "label": "Google (Gemini)", "env": "GEMINI_API_KEY",
+        "models": ["gemini-2.5-pro", "gemini-2.5-flash"],
+        "kind": "openai",
+        "base": "https://generativelanguage.googleapis.com/v1beta/openai"},
     "openrouter": {
         "label": "OpenRouter (multi-model)", "env": "OPENROUTER_API_KEY",
         "models": ["anthropic/claude-opus-4-8", "openai/gpt-5.1",
@@ -178,7 +187,7 @@ def make_client(provider: Optional[str] = None, model: Optional[str] = None,
     key = api_key or (os.environ.get(spec["env"]) if spec["env"] else None)
     if spec["env"] and not key:
         return NullLLM()            # hosted provider without a key → no model
-    base = base_url or spec["base"]
+    base = base_url or (os.environ.get("OLLAMA_HOST") if provider == "ollama" else None) or spec["base"]
     mdl = model or spec["models"][0]
     if spec["kind"] == "anthropic":
         return AnthropicClient(mdl, key, base)

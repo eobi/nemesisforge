@@ -58,12 +58,27 @@ _JOBS: dict[str, object] = {}
 
 
 class ScanReq(BaseModel):
+    mode: str = "preset"              # how to point at the asset (see MODES)
     preset: str = "heap-overflow"
-    harness: str | None = None
-    provider: str | None = None       # LLM brain: portal selection
+    ref: str | None = None           # binary path (mode=binary)
+    harness: str | None = None       # custom C harness (mode=harness)
+    provider: str | None = None      # LLM brain: portal selection
     model: str | None = None
     api_key: str | None = None
     base_url: str | None = None
+
+
+# Input modes — how you point Forge at an asset.
+MODES = [
+    {"id": "preset", "label": "Lab asset (built-in vulnerable target)",
+     "input": "preset"},
+    {"id": "harness", "label": "Custom C harness (paste source)", "input": "code"},
+    {"id": "binary", "label": "Binary / firmware (path on disk)", "input": "path"},
+    {"id": "repo", "label": "Source repo (git URL) — needs harness synth",
+     "input": "url", "status": "beta"},
+    {"id": "device", "label": "Android device (adb) — needs a device",
+     "input": "serial", "status": "beta"},
+]
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -82,19 +97,53 @@ def api_providers() -> dict:
     return {"providers": list_providers()}
 
 
+@app.get("/api/modes")
+def api_modes() -> dict:
+    return {"modes": MODES}
+
+
 @app.post("/api/scan")
 async def api_scan(req: ScanReq) -> dict:
-    harness = req.harness or (PRESETS.get(req.preset) or PRESETS["heap-overflow"])["harness"]
+    from .llm import make_client
+    from .job import binary_lab_job
     job_id = f"forge-{uuid.uuid4().hex[:10]}"
-    ctx, discovery, oracles, escalation, llm = lab_job(
-        job_id, harness, artifacts_root=_RUNS, name=req.preset,
-        provider=req.provider, model=req.model, api_key=req.api_key,
-        base_url=req.base_url)
+
+    if req.mode == "binary" and req.ref:
+        ctx, discovery, oracles, escalation = binary_lab_job(
+            job_id, req.ref, artifacts_root=_RUNS, name=req.ref.split("/")[-1])
+        llm = make_client(req.provider, req.model, req.api_key, req.base_url)
+        harness = ""
+    else:                                # preset | harness (source path)
+        if req.mode == "harness" and req.harness:
+            harness, name = req.harness, "custom-harness"
+        else:
+            harness = (PRESETS.get(req.preset) or PRESETS["heap-overflow"])["harness"]
+            name = req.preset
+        ctx, discovery, oracles, escalation, llm = lab_job(
+            job_id, harness, artifacts_root=_RUNS, name=name,
+            provider=req.provider, model=req.model, api_key=req.api_key,
+            base_url=req.base_url)
+
     _JOBS[job_id] = ctx
-    # fire-and-stream: the run drives the bus the UI is already watching
     asyncio.create_task(run_job(ctx, discovery=discovery, oracles=oracles,
                                 escalation=escalation, llm=llm, harness=harness))
     return {"job_id": job_id}
+
+
+@app.get("/api/runs")
+def api_runs() -> dict:
+    """History: every past run's metadata, newest first."""
+    runs = []
+    if _RUNS.exists():
+        for d in _RUNS.iterdir():
+            mpath = d / "metadata.json"
+            if mpath.exists():
+                try:
+                    runs.append(json.loads(mpath.read_text()))
+                except Exception:
+                    pass
+    runs.sort(key=lambda r: r.get("job_id", ""), reverse=True)
+    return {"runs": runs[:100]}
 
 
 @app.get("/api/job/{job_id}/stream")

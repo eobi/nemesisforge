@@ -50,6 +50,11 @@
   .a.find{background:#160b0c;border:1px solid #3a2230;border-left:3px solid var(--accent);border-radius:8px;padding:9px;margin:6px 0}
   code{color:var(--ok)}
   .badge{font-size:10px;padding:1px 7px;border-radius:9px;background:var(--ok);color:#04130c}
+  .run{display:flex;gap:8px;align-items:center;padding:8px 10px;border:1px solid var(--edge);border-radius:8px;margin-bottom:6px;cursor:pointer;background:#0c111b}
+  .run:hover{border-color:var(--accent)} .run .rt{flex:1;min-width:0} .run .rt b{font-size:13px}
+  .run .rt .sub{color:var(--muted);font-size:11px} .run .rf{font-size:11px;color:var(--muted);text-align:right;white-space:nowrap}
+  .pill{font-size:10px;padding:1px 7px;border-radius:9px;border:1px solid var(--edge)}
+  .pill.r6{color:var(--ok);border-color:#1e5c43} .pill.r4,.pill.r5{color:var(--accent)} .pill.r0{color:var(--muted)}
 </style>
 </head>
 <body>
@@ -58,15 +63,28 @@
   <span class="tag">discover · <b style="color:var(--warn)">prove</b> · weaponize — an oracle certifies every rung</span>
 </header>
 <div class="controls">
-  <span style="color:var(--muted)">asset</span>
-  <select id="preset"></select>
+  <span style="color:var(--muted)">point at</span>
+  <select id="mode" onchange="onMode()"></select>
+  <span id="modeInput">
+    <select id="preset"></select>
+    <input id="ref" placeholder="/path/to/binary" style="display:none;background:#0c111b;border:1px solid var(--edge);color:var(--txt);padding:7px 10px;border-radius:7px;width:260px" />
+  </span>
   <span style="color:var(--muted)">· brain</span>
   <select id="provider" onchange="onProvider()"></select>
   <select id="model"></select>
   <input id="apikey" type="password" placeholder="API key (if hosted)"
-         style="background:#0c111b;border:1px solid var(--edge);color:var(--txt);padding:7px 10px;border-radius:7px;width:160px" />
+         style="background:#0c111b;border:1px solid var(--edge);color:var(--txt);padding:7px 10px;border-radius:7px;width:150px" />
   <button class="run" onclick="scan()">▶ Run engagement</button>
-  <span id="status">pick an asset + brain, then run.</span>
+  <button onclick="toggleRuns()" style="background:#0c111b;border:1px solid var(--edge);color:var(--txt);padding:7px 10px;border-radius:7px;cursor:pointer">History</button>
+  <span id="status">point at an asset + pick a brain, then run.</span>
+</div>
+<div id="harnessBox" style="display:none;padding:8px 20px;border-bottom:1px solid var(--edge)">
+  <textarea id="harness" placeholder="// paste a C harness that reads stdin (main(){...read(0,..)...})"
+    style="width:100%;height:80px;background:#0c111b;border:1px solid var(--edge);color:var(--txt);border-radius:7px;padding:8px;font:12px ui-monospace"></textarea>
+</div>
+<div id="runsPanel" style="display:none;position:fixed;top:110px;right:18px;width:420px;max-height:70vh;overflow:auto;background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:14px;z-index:20;box-shadow:0 8px 40px #000a">
+  <h2 style="margin-top:0">Run history</h2>
+  <div id="runs"><div style="color:var(--muted)">loading…</div></div>
 </div>
 <main>
   <section class="col left">
@@ -86,20 +104,53 @@ const RUNGS = ["UNVERIFIED","PROVEN_FAULT","PROVEN_REACHABLE","PROVEN_SECURITY",
                "PROVEN_PRIMITIVE","PROVEN_EXPLOIT","VENDOR_READY"];
 let ES=null, AGENTS={}, BOARD={};
 
-let PROVIDERS=[];
+let PROVIDERS=[], MODES=[];
 async function boot(){
   const d = await (await fetch('/api/presets')).json();
   const s = document.getElementById('preset'); s.innerHTML='';
   d.presets.forEach(p=>{const o=document.createElement('option');o.value=p.id;o.textContent=p.label;s.appendChild(o);});
+  const md = await (await fetch('/api/modes')).json(); MODES=md.modes;
+  const ms=document.getElementById('mode'); ms.innerHTML='';
+  MODES.forEach(m=>{const o=document.createElement('option');o.value=m.id;
+    o.textContent=m.label+(m.status?' ['+m.status+']':'');ms.appendChild(o);});
   const pv = await (await fetch('/api/providers')).json();
   PROVIDERS = pv.providers;
   const ps = document.getElementById('provider'); ps.innerHTML='';
   const none=document.createElement('option'); none.value=''; none.textContent='deterministic only (no LLM)'; ps.appendChild(none);
   PROVIDERS.forEach(p=>{const o=document.createElement('option');o.value=p.id;
     o.textContent=p.label+(p.needs_key&&!p.configured?' (needs key)':'');ps.appendChild(o);});
-  onProvider();
-  renderLadder();
+  // default brain = ollama (local, no per-call cost); user can pick any
+  ps.value = PROVIDERS.find(p=>p.id==='ollama') ? 'ollama' : '';
+  onProvider(); onMode(); renderLadder();
 }
+function onMode(){
+  const m=MODES.find(x=>x.id===document.getElementById('mode').value)||{};
+  document.getElementById('preset').style.display = m.input==='preset'?'':'none';
+  document.getElementById('ref').style.display   = (m.input==='path'||m.input==='url'||m.input==='serial')?'':'none';
+  document.getElementById('harnessBox').style.display = m.input==='code'?'block':'none';
+  const ref=document.getElementById('ref');
+  ref.placeholder = m.input==='url'?'https://github.com/org/repo':m.input==='serial'?'adb serial (or blank)':'/path/to/binary';
+}
+function toggleRuns(){ const p=document.getElementById('runsPanel');
+  const show=p.style.display!=='block'; p.style.display=show?'block':'none'; if(show) loadRuns(); }
+async function loadRuns(){
+  const box=document.getElementById('runs');
+  try{ const d=await (await fetch('/api/runs')).json();
+    if(!d.runs.length){ box.innerHTML='<div style="color:var(--muted)">no runs yet</div>'; return; }
+    box.innerHTML=''; d.runs.forEach(r=>{
+      const el=document.createElement('div'); el.className='run';
+      const rung=r.top_rung||0;
+      el.innerHTML=`<div class="rt"><b>${esc(r.target||r.job_id)}</b>
+        <div class="sub">${esc(r.target_type||'')} · brain: ${esc(r.llm||'none')} · ${esc(r.status||'')}</div></div>
+        <div class="rf"><span class="pill r${rung}">rung ${rung}</span> ${r.findings||0} find</div>`;
+      el.onclick=()=>openRun(r.job_id); box.appendChild(el);
+    });
+  }catch(e){ box.innerHTML='<div class="a bad"><span class="m">failed to load runs</span></div>'; }
+}
+function openRun(jobId){ document.getElementById('runsPanel').style.display='none';
+  document.getElementById('activity').innerHTML=''; document.getElementById('findings').innerHTML='';
+  AGENTS={};BOARD={};renderAgents();renderLadder(); if(ES)ES.close();
+  ES=new EventSource(`/api/job/${jobId}/stream`); ES.onmessage=m=>handle(JSON.parse(m.data)); }
 function onProvider(){
   const pid=document.getElementById('provider').value;
   const p=PROVIDERS.find(x=>x.id===pid);
@@ -199,11 +250,14 @@ async function scan(){
   document.getElementById('findings').innerHTML='';
   AGENTS={};BOARD={};renderAgents();renderLadder();
   setStatus('queuing…');
+  const mode=document.getElementById('mode').value;
   const preset=document.getElementById('preset').value;
+  const ref=document.getElementById('ref').value||null;
+  const harness=document.getElementById('harness').value||null;
   const provider=document.getElementById('provider').value||null;
   const model=document.getElementById('model').value||null;
   const api_key=document.getElementById('apikey').value||null;
-  const {job_id}=await (await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({preset,provider,model,api_key})})).json();
+  const {job_id}=await (await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode,preset,ref,harness,provider,model,api_key})})).json();
   if(ES)ES.close();
   ES=new EventSource(`/api/job/${job_id}/stream`);
   ES.onmessage=async m=>{

@@ -43,13 +43,28 @@ def _persist(ctx: JobContext, findings: list[Finding]) -> None:
                               default=str))
 
 
+def _meta(ctx: JobContext, **kw) -> None:
+    """Persist run metadata for the history view."""
+    path = ctx.artifacts / "metadata.json"
+    cur = {}
+    if path.exists():
+        try:
+            cur = json.loads(path.read_text())
+        except Exception:
+            cur = {}
+    cur.update(kw)
+    path.write_text(json.dumps(cur, default=str))
+
+
 async def run_job(ctx: JobContext, *, discovery: list[Callable],
                   oracles: list[Oracle], escalation: list[Oracle] | None = None,
                   llm=None, harness: str = "") -> list[Finding]:
-    ctx.bus.append(EventType.JOB_START,
-                   target=getattr(ctx.target, "name", "") or ctx.job_id,
-                   target_type=getattr(ctx.target, "target_type", ""),
-                   llm=getattr(llm, "model", None) if getattr(llm, "available", False) else None)
+    tname = getattr(ctx.target, "name", "") or ctx.job_id
+    ttype = getattr(ctx.target, "target_type", "")
+    llm_name = getattr(llm, "model", None) if getattr(llm, "available", False) else None
+    ctx.bus.append(EventType.JOB_START, target=tname, target_type=ttype, llm=llm_name)
+    _meta(ctx, job_id=ctx.job_id, target=tname, target_type=ttype, llm=llm_name,
+          status="running")
     findings: list[Finding] = []
     try:
         coord = Coordinator(ctx, discovery=discovery, oracles=oracles,
@@ -67,6 +82,10 @@ async def run_job(ctx: JobContext, *, discovery: list[Callable],
     except Exception as e:               # a job must fail loud but clean
         ctx.bus.append(EventType.ERROR, error=f"{type(e).__name__}: {e}")
     _persist(ctx, findings)
+    top = max((int(f.rung) for f in findings), default=0)
+    _meta(ctx, status="done", findings=len(findings),
+          vendor_ready=sum(1 for f in findings if f.vendor_shippable),
+          top_rung=top)
     ctx.bus.append(
         EventType.JOB_DONE,
         findings=len(findings),

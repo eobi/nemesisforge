@@ -22,41 +22,52 @@ from ..events import EventType
 from ..ladder import Candidate, Outcome, Verdict
 from .base import Agent
 
+# Each payload-crafter attacks the primitive from a different angle.
+STRATEGIES = {
+    "widen": "maximize the out-of-bounds write EXTENT (longest controlled write)",
+    "control": "make the faulting ADDRESS or overwritten VALUE attacker-chosen "
+               "(toward write-what-where / PC control)",
+    "guarded": "satisfy any length/magic/structure guards in the input so the "
+               "payload reaches DEEPER code before crashing",
+}
+
 _SYSTEM = (
-    "You are an exploit-development specialist. You are given a proven crash in a "
-    "target and must craft a single stdin input that DEEPENS the bug — maximize "
-    "the out-of-bounds write extent, or reach a controllable primitive. You do "
-    "NOT get to decide if it worked; a sanitizer oracle checks your input. Reply "
-    "ONLY with JSON: {\"input_b64\": \"<base64 of the raw bytes>\", "
-    "\"rationale\": \"<one line>\"}.")
+    "You are an exploit-development specialist. Given a proven crash, craft a "
+    "single stdin input whose GOAL is: {goal}. You do NOT decide success — a "
+    "sanitizer oracle checks your input. Reply ONLY with JSON: "
+    "{{\"input_b64\": \"<base64 raw bytes>\", \"rationale\": \"<one line>\"}}.")
 
 
 class LLMSynthAgent(Agent):
     kind = "llm_synth"
 
-    def __init__(self, ctx, name: str = "llm-synth", parent_id: str = "", *,
+    def __init__(self, ctx, name: str = "synth", parent_id: str = "", *,
                  candidate: Optional[Candidate] = None, llm=None,
-                 oracles: Optional[list] = None, rounds: int = 3) -> None:
-        super().__init__(ctx, name=name, parent_id=parent_id)
+                 oracles: Optional[list] = None, rounds: int = 2,
+                 strategy: str = "widen") -> None:
+        super().__init__(ctx, name=f"{name}:{strategy}", parent_id=parent_id)
         self.candidate = candidate
         self.llm = llm
         self.oracles = list(oracles or [])
         self.rounds = rounds
+        self.strategy = strategy
 
     async def run(self) -> Optional[Verdict]:
         cand, llm = self.candidate, self.llm
         if cand is None or llm is None or not getattr(llm, "available", False):
             self.log("no model configured — skipping LLM synthesis")
             return None
-        self.objective("LLM: synthesize a sharper exploit input for the primitive")
+        goal = STRATEGIES.get(self.strategy, "deepen the bug")
+        self.objective(f"LLM payload-crafter [{self.strategy}]: {goal}")
+        system = _SYSTEM.format(goal=goal)
 
         crash = (cand.crash or {}) or {}
         best: Optional[Verdict] = None
         feedback = ""
         for i in range(self.rounds):
             prompt = self._prompt(cand, crash, feedback)
-            self.think(i, "asking the model for a crafted input")
-            parsed, _meta = await asyncio.to_thread(llm.complete_json, _SYSTEM, prompt)
+            self.think(i, "crafting a custom exploit payload")
+            parsed, _meta = await asyncio.to_thread(llm.complete_json, system, prompt)
             b64 = (parsed or {}).get("input_b64") if isinstance(parsed, dict) else None
             if not b64:
                 feedback = "your last reply was not valid JSON with input_b64"

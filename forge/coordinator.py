@@ -56,13 +56,19 @@ class Coordinator(Agent):
         # inputs the deterministic escalation oracles then certify — pushing past
         # what the fuzzer reached. Model proposes, oracle proves.
         if self.llm is not None and getattr(self.llm, "available", False) and self.escalation:
-            from .agents.llm_synth import LLMSynthAgent
-            synth = self.child(LLMSynthAgent, candidate=cand, llm=self.llm,
-                               oracles=self.escalation)
-            v = await synth.execute()
-            if v is not None and v.outcome is Outcome.PROVEN and (
-                    best is None or v.rung > best.rung):
-                best = v
+            from .agents.llm_synth import LLMSynthAgent, STRATEGIES
+            # a SQUAD of payload-crafters, each attacking the primitive from a
+            # different angle, in parallel — the oracle certifies whoever wins.
+            squad = [self.child(LLMSynthAgent, candidate=cand, llm=self.llm,
+                                oracles=self.escalation, strategy=s)
+                     for s in STRATEGIES]
+            verdicts = await asyncio.gather(*[a.execute() for a in squad],
+                                            return_exceptions=True)
+            for v in verdicts:
+                from .ladder import Verdict as _V
+                if isinstance(v, _V) and v.outcome is Outcome.PROVEN and (
+                        best is None or v.rung > best.rung):
+                    best = v
         if best is not None and best.outcome is Outcome.PROVEN and best.rung > finding.rung:
             # Carry the base proof's reproducer + symbolized crash forward: the
             # escalation oracle certified a higher rung, but the richest crash

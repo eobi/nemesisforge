@@ -39,8 +39,9 @@ def _ctx(tmp_path):
 def test_provider_registry():
     ids = {p["id"] for p in list_providers()}
     assert {"anthropic", "openai", "openrouter", "ollama", "local"} <= ids
-    # no key configured here → hosted providers resolve to NullLLM
-    assert isinstance(make_client("anthropic", api_key=None), NullLLM)
+    # provider absence / unknown → NullLLM (key-independent)
+    assert isinstance(make_client(None), NullLLM)
+    assert isinstance(make_client("nope"), NullLLM)
 
 
 def test_strategist_spawns_lens_subagents(tmp_path):
