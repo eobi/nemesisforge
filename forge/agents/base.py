@@ -53,6 +53,15 @@ class Agent(ABC):
         self.em.emit(EventType.AGENT_DONE, name=self.name)
         return result
 
+    @property
+    def aci(self):
+        """The agent-computer interface (L3): read_file/grep/build/run/shell/
+        symbolize, backed by this job's target + sandbox."""
+        if not hasattr(self, "_aci"):
+            from ..aci.tools import ACI
+            self._aci = ACI(self.ctx)
+        return self._aci
+
     # ── spawning (builds the tree) ──
     def child(self, factory: Callable[..., "Agent"], *args: Any, **kwargs: Any) -> "Agent":
         """Construct a sub-agent parented to this one. `factory` is an Agent
