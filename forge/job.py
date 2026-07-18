@@ -218,7 +218,12 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
               seed_patch=patch, corpus_root=corpus_root)
     if sanitizer:                          # e.g. "address" — hunt real corruption,
         vh["sanitizer"] = sanitizer        # not benign UB that halts the fuzzer early
-    discovery = [partial(VariantHunterAgent, repo=info, llm=llm, **vh)]
+    # Multi-lens: the dynamic fuzzer + a SOURCE-code static-analysis lens run in
+    # parallel — static flags leads on paths the fuzzer can't reach, and corroborates
+    # dynamic crashes.
+    from .agents.static_analysis import StaticAnalysisAgent
+    discovery = [partial(VariantHunterAgent, repo=info, llm=llm, **vh),
+                 partial(StaticAnalysisAgent, repo=info)]
     oracles: list[Oracle] = [SanitizerOracle()]
     escalation: list[Oracle] = [ControllabilityOracle()] if escalate else []
     return ctx, discovery, oracles, escalation, llm
