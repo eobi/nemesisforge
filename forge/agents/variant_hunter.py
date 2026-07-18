@@ -43,6 +43,7 @@ class VariantHunterAgent(Agent):
     def __init__(self, ctx, name: str = "variant-hunter", parent_id: str = "", *,
                  repo: Optional[_repo.RepoInfo] = None, llm=None,
                  max_sources: int = 8, max_targets: int = 3, fuzz_time: int = 30,
+                 sanitizer: str = "address,undefined",
                  corpus_root: Optional[Path] = None) -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.repo = repo or getattr(ctx, "repo", None)
@@ -50,6 +51,7 @@ class VariantHunterAgent(Agent):
         self.max_sources = max_sources
         self.max_targets = max_targets
         self.fuzz_time = fuzz_time
+        self.sanitizer = sanitizer          # ASan + UBSan by default on repos
         self.corpus_root = Path(corpus_root) if corpus_root else ctx.artifacts / "corpus"
 
     async def run(self) -> list[Candidate]:
@@ -99,7 +101,8 @@ class VariantHunterAgent(Agent):
             child = self.child(
                 HarnessSynthAgent, repo=self.repo, llm=self.llm,
                 sources=[Path(fpath)], focus_note=note, fuzz_time=self.fuzz_time,
-                corpus_root=self.corpus_root, corpus_tag=f"v{i}_")
+                sanitizer=self.sanitizer, corpus_root=self.corpus_root,
+                corpus_tag=f"v{i}_")
             candidates.extend(await child.execute() or [])
 
         self.log(f"{len(candidates)} candidate(s) from {len(by_file)} reasoned target(s)")
@@ -139,5 +142,5 @@ class VariantHunterAgent(Agent):
         """No sinks found (unusual) — fall back to plain harness synth."""
         child = self.child(HarnessSynthAgent, repo=self.repo, llm=self.llm,
                            max_targets=self.max_targets, fuzz_time=self.fuzz_time,
-                           corpus_root=self.corpus_root)
+                           sanitizer=self.sanitizer, corpus_root=self.corpus_root)
         return await child.execute() or []

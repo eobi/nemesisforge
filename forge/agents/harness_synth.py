@@ -52,13 +52,14 @@ class HarnessSynthAgent(Agent):
                  max_targets: int = 3, fuzz_time: int = 30,
                  probe_time: int = 6, corpus_root: Optional[Path] = None,
                  sources: Optional[list] = None, focus_note: str = "",
-                 corpus_tag: str = "h") -> None:
+                 sanitizer: str = "address", corpus_tag: str = "h") -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.repo = repo or getattr(ctx, "repo", None)
         self.llm = llm
         self.max_targets = max_targets
         self.fuzz_time = fuzz_time
         self.probe_time = probe_time
+        self.sanitizer = sanitizer
         self.corpus_root = Path(corpus_root) if corpus_root else ctx.artifacts / "corpus"
         # When the reasoning tier aims us at specific sources/sinks (Phase I), we
         # harness exactly those with the suspect sink emphasized in the prompt.
@@ -103,7 +104,8 @@ class HarnessSynthAgent(Agent):
             self.log(f"live harness for {src.name} (probe cov={cov}) — full fuzz")
             child = self.child(
                 LibFuzzerDiscoveryAgent, harness=harness, target_sources=[src],
-                include_dirs=incs, corpus_dir=corpus, max_total_time=self.fuzz_time)
+                include_dirs=incs, corpus_dir=corpus, sanitizer=self.sanitizer,
+                max_total_time=self.fuzz_time)
             candidates.extend(await child.execute() or [])
 
         self.log(f"{len(candidates)} candidate(s) from {self.max_targets} "
@@ -150,8 +152,8 @@ class HarnessSynthAgent(Agent):
         probe. Live iff it compiles AND reaches non-trivial coverage (or crashes)."""
         target = self.ctx.target
         build = await asyncio.to_thread(
-            target.build, harness, fuzzer=True, target_sources=[src],
-            include_dirs=incs)
+            target.build, harness, fuzzer=True, sanitizer=self.sanitizer,
+            target_sources=[src], include_dirs=incs)
         if not build.ok:
             return False, 0, "build failed: " + (build.log or "")[-300:]
         fr = await asyncio.to_thread(

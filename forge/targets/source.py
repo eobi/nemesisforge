@@ -78,9 +78,17 @@ class SourceTarget:
         sources = [str(src), *[str(p) for p in (target_sources or [])]]
         compiler = self.compiler
 
+        extra: list[str] = []
         if fuzzer:
             compiler = fuzzengine.find_libfuzzer_clang() or self.compiler
-            fsan = f"fuzzer,{sanitizer}"
+            sans = [s for s in sanitizer.split(",") if s]
+            if "undefined" in sans:
+                flags = fuzzengine.ubsan_fuzzer_flags(compiler)
+                if flags is not None:
+                    extra.extend(flags)              # e.g. -fuse-ld=lld on macOS
+                else:
+                    sans = [s for s in sans if s != "undefined"]   # unsupported → degrade
+            fsan = "fuzzer," + ",".join(sans) if sans else "fuzzer,address"
         elif libfuzzer_driver:
             driver = bdir / f"{_DRIVER}.c"
             driver.write_text(fuzzengine.LF_DRIVER)
@@ -90,8 +98,12 @@ class SourceTarget:
             fsan = sanitizer
 
         incs = [f"-I{p}" for p in (include_dirs or [])]
+        # UBSan only warns by default; make it a hard, parseable crash so the
+        # oracle can prove integer/UB bugs the same way it proves ASan crashes.
+        recover = ["-fno-sanitize-recover=undefined"] if "undefined" in fsan else []
         argv = [compiler, f"-fsanitize={fsan}", "-g", "-O1",
-                "-fno-omit-frame-pointer", *incs, *sources, "-o", str(binary)]
+                "-fno-omit-frame-pointer", *recover, *extra, *incs, *sources,
+                "-o", str(binary)]
         res = self.sandbox.run(argv, cwd=bdir, timeout=180)
         ok = res.rc == 0 and binary.exists()
         return BuildResult(ok=ok, binary=binary if ok else None, log=res.output)

@@ -82,6 +82,46 @@ def find_libfuzzer_clang() -> Optional[str]:
     return None
 
 
+_ubsan_cache: dict[str, Optional[list]] = {}
+_UB_PROBE = (b"#include <stdint.h>\n#include <stddef.h>\n"
+             b"int LLVMFuzzerTestOneInput(const uint8_t*d,size_t n){"
+             b"if(n){int x=2147483647;x+=d[0];volatile int z=x;(void)z;}return 0;}\n")
+
+
+def ubsan_fuzzer_flags(clang: str) -> Optional[list]:
+    """Extra link flags to make `-fsanitize=fuzzer,address,undefined` LINK with
+    `clang`, or None if UBSan+fuzzer can't be built at all. Probed once + cached.
+
+    On macOS the Apple system linker rejects Homebrew-clang UBSan objects, so we
+    need `-fuse-ld=lld`; on Linux the system linker is fine. Rather than guess the
+    linker's filename, we compile a tiny UB harness and see what actually works."""
+    if clang in _ubsan_cache:
+        return _ubsan_cache[clang]
+    result: Optional[list] = None
+    for extra in (["-fuse-ld=lld"], []):
+        if _builds_ubsan(clang, extra):
+            result = extra
+            break
+    _ubsan_cache[clang] = result
+    return result
+
+
+def _builds_ubsan(clang: str, extra: list) -> bool:
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "u.c"
+            src.write_bytes(_UB_PROBE)
+            out = Path(d) / "u"
+            r = subprocess.run(
+                [clang, "-fsanitize=fuzzer,address,undefined",
+                 "-fno-sanitize-recover=undefined", *extra, "-O0",
+                 str(src), "-o", str(out)],
+                capture_output=True, timeout=90)
+            return r.returncode == 0 and out.exists()
+    except Exception:
+        return False
+
+
 def _links_fuzzer(clang: str) -> bool:
     if not (clang and (Path(clang).exists() or shutil.which(clang))):
         return False

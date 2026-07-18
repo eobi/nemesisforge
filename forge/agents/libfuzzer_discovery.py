@@ -35,6 +35,7 @@ class LibFuzzerDiscoveryAgent(Agent):
                  max_len: int = 4096,
                  target_sources: Optional[Sequence[Path]] = None,
                  include_dirs: Optional[Sequence[Path]] = None,
+                 sanitizer: str = "address",
                  bug_class: str = "memory_safety") -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.harness = harness
@@ -44,6 +45,7 @@ class LibFuzzerDiscoveryAgent(Agent):
         self.max_len = max_len
         self.target_sources = list(target_sources or [])
         self.include_dirs = list(include_dirs or [])
+        self.sanitizer = sanitizer
         self.bug_class = bug_class
 
     async def run(self) -> list[Candidate]:
@@ -57,7 +59,7 @@ class LibFuzzerDiscoveryAgent(Agent):
         target = self.ctx.target
 
         build = await asyncio.to_thread(
-            target.build, self.harness, fuzzer=True,
+            target.build, self.harness, fuzzer=True, sanitizer=self.sanitizer,
             target_sources=self.target_sources or None,
             include_dirs=self.include_dirs or None)
         if not build.ok:
@@ -105,6 +107,7 @@ class LibFuzzerDiscoveryAgent(Agent):
             proposed_check={"harness": self.harness,
                             "input_b64": base64.b64encode(inp).decode(),
                             "libfuzzer": True,
+                            "sanitizer": self.sanitizer,
                             "target_sources": [str(p) for p in self.target_sources]
                             or None,
                             "include_dirs": [str(p) for p in self.include_dirs]
