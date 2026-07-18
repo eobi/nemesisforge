@@ -30,10 +30,10 @@ int main(void) {
 
 
 def test_lab_job_end_to_end(tmp_path):
-    ctx, discovery, oracles, escalation = lab_job(f"job-{tmp_path.name}", VULN,
-                                                  artifacts_root=tmp_path, max_tries=4)
+    ctx, discovery, oracles, escalation, llm = lab_job(f"job-{tmp_path.name}", VULN,
+                                                       artifacts_root=tmp_path, max_tries=4)
     findings = asyncio.run(run_job(ctx, discovery=discovery, oracles=oracles,
-                                   escalation=escalation))
+                                   escalation=escalation, llm=llm, harness=VULN))
 
     assert len(findings) == 1
     f = findings[0]
@@ -74,9 +74,9 @@ def test_clean_harness_finds_nothing(tmp_path):
 #include <unistd.h>
 int main(void){ char in[16]; long n=read(0,in,sizeof(in)); return (int)(n>0?in[0]:0); }
 """
-    ctx, discovery, oracles, escalation = lab_job(f"job-{tmp_path.name}", safe,
-                                                  artifacts_root=tmp_path, max_tries=3)
+    ctx, discovery, oracles, escalation, llm = lab_job(f"job-{tmp_path.name}", safe,
+                                                       artifacts_root=tmp_path, max_tries=3)
     findings = asyncio.run(run_job(ctx, discovery=discovery, oracles=oracles,
-                                   escalation=escalation))
+                                   escalation=escalation, llm=llm, harness=safe))
     assert findings == []
     assert ctx.bus.all()[-1].type == EventType.JOB_DONE

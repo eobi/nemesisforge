@@ -58,10 +58,15 @@
   <span class="tag">discover · <b style="color:var(--warn)">prove</b> · weaponize — an oracle certifies every rung</span>
 </header>
 <div class="controls">
-  <span style="color:var(--muted)">lab target</span>
+  <span style="color:var(--muted)">asset</span>
   <select id="preset"></select>
+  <span style="color:var(--muted)">· brain</span>
+  <select id="provider" onchange="onProvider()"></select>
+  <select id="model"></select>
+  <input id="apikey" type="password" placeholder="API key (if hosted)"
+         style="background:#0c111b;border:1px solid var(--edge);color:var(--txt);padding:7px 10px;border-radius:7px;width:160px" />
   <button class="run" onclick="scan()">▶ Run engagement</button>
-  <span id="status">pick a lab target and run.</span>
+  <span id="status">pick an asset + brain, then run.</span>
 </div>
 <main>
   <section class="col left">
@@ -81,11 +86,27 @@ const RUNGS = ["UNVERIFIED","PROVEN_FAULT","PROVEN_REACHABLE","PROVEN_SECURITY",
                "PROVEN_PRIMITIVE","PROVEN_EXPLOIT","VENDOR_READY"];
 let ES=null, AGENTS={}, BOARD={};
 
+let PROVIDERS=[];
 async function boot(){
   const d = await (await fetch('/api/presets')).json();
   const s = document.getElementById('preset'); s.innerHTML='';
   d.presets.forEach(p=>{const o=document.createElement('option');o.value=p.id;o.textContent=p.label;s.appendChild(o);});
+  const pv = await (await fetch('/api/providers')).json();
+  PROVIDERS = pv.providers;
+  const ps = document.getElementById('provider'); ps.innerHTML='';
+  const none=document.createElement('option'); none.value=''; none.textContent='deterministic only (no LLM)'; ps.appendChild(none);
+  PROVIDERS.forEach(p=>{const o=document.createElement('option');o.value=p.id;
+    o.textContent=p.label+(p.needs_key&&!p.configured?' (needs key)':'');ps.appendChild(o);});
+  onProvider();
   renderLadder();
+}
+function onProvider(){
+  const pid=document.getElementById('provider').value;
+  const p=PROVIDERS.find(x=>x.id===pid);
+  const ms=document.getElementById('model'); ms.innerHTML='';
+  (p?.models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;ms.appendChild(o);});
+  document.getElementById('model').style.display=p?'':'none';
+  document.getElementById('apikey').style.display=(p&&p.needs_key&&!p.configured)?'':'none';
 }
 function esc(x){return String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 
@@ -179,7 +200,10 @@ async function scan(){
   AGENTS={};BOARD={};renderAgents();renderLadder();
   setStatus('queuing…');
   const preset=document.getElementById('preset').value;
-  const {job_id}=await (await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({preset})})).json();
+  const provider=document.getElementById('provider').value||null;
+  const model=document.getElementById('model').value||null;
+  const api_key=document.getElementById('apikey').value||null;
+  const {job_id}=await (await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({preset,provider,model,api_key})})).json();
   if(ES)ES.close();
   ES=new EventSource(`/api/job/${job_id}/stream`);
   ES.onmessage=async m=>{

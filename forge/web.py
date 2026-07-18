@@ -60,6 +60,10 @@ _JOBS: dict[str, object] = {}
 class ScanReq(BaseModel):
     preset: str = "heap-overflow"
     harness: str | None = None
+    provider: str | None = None       # LLM brain: portal selection
+    model: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -72,16 +76,24 @@ def api_presets() -> dict:
     return {"presets": [{"id": k, "label": v["label"]} for k, v in PRESETS.items()]}
 
 
+@app.get("/api/providers")
+def api_providers() -> dict:
+    from .llm import list_providers
+    return {"providers": list_providers()}
+
+
 @app.post("/api/scan")
 async def api_scan(req: ScanReq) -> dict:
     harness = req.harness or (PRESETS.get(req.preset) or PRESETS["heap-overflow"])["harness"]
     job_id = f"forge-{uuid.uuid4().hex[:10]}"
-    ctx, discovery, oracles, escalation = lab_job(job_id, harness,
-                                                  artifacts_root=_RUNS, name=req.preset)
+    ctx, discovery, oracles, escalation, llm = lab_job(
+        job_id, harness, artifacts_root=_RUNS, name=req.preset,
+        provider=req.provider, model=req.model, api_key=req.api_key,
+        base_url=req.base_url)
     _JOBS[job_id] = ctx
     # fire-and-stream: the run drives the bus the UI is already watching
     asyncio.create_task(run_job(ctx, discovery=discovery, oracles=oracles,
-                                escalation=escalation))
+                                escalation=escalation, llm=llm, harness=harness))
     return {"job_id": job_id}
 
 

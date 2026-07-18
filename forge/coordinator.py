@@ -29,13 +29,16 @@ class Coordinator(Agent):
     def __init__(self, ctx, *, discovery: list[DiscoveryFactory],
                  oracles: list[Oracle], escalation: list[Oracle] | None = None,
                  validate: bool = False, package: bool = True, llm=None,
-                 name: str = "coordinator") -> None:
+                 llm_discovery: list[DiscoveryFactory] | None = None,
+                 harness: str = "", name: str = "coordinator") -> None:
         super().__init__(ctx, name=name, parent_id="")
         self.discovery = discovery
         self.router = OracleRouter(oracles)
         self.escalation = list(escalation or [])
         self.package = package          # assemble the vendor packet at rung >= 4
-        self.llm = llm                  # optional; enriches root-cause + patch
+        self.llm = llm                  # the brain (None/NullLLM → deterministic only)
+        self.llm_discovery = list(llm_discovery or [])
+        self.harness = harness          # passed to LLM discovery/synth for source
         # writer≠validator: independently re-verify reportable findings before
         # they ship. Off by default (re-running a deterministic oracle is
         # redundant); turn on when a non-deterministic/LLM writer is in the loop.
@@ -49,6 +52,17 @@ class Coordinator(Agent):
         agent = self.child(EscalationAgent, candidate=cand,
                            escalation_oracles=self.escalation)
         best = await agent.execute()
+        # LLM synthesis: when a model is configured, it writes sharper exploit
+        # inputs the deterministic escalation oracles then certify — pushing past
+        # what the fuzzer reached. Model proposes, oracle proves.
+        if self.llm is not None and getattr(self.llm, "available", False) and self.escalation:
+            from .agents.llm_synth import LLMSynthAgent
+            synth = self.child(LLMSynthAgent, candidate=cand, llm=self.llm,
+                               oracles=self.escalation)
+            v = await synth.execute()
+            if v is not None and v.outcome is Outcome.PROVEN and (
+                    best is None or v.rung > best.rung):
+                best = v
         if best is not None and best.outcome is Outcome.PROVEN and best.rung > finding.rung:
             # Carry the base proof's reproducer + symbolized crash forward: the
             # escalation oracle certified a higher rung, but the richest crash
@@ -103,6 +117,12 @@ class Coordinator(Agent):
     # ── 1. parallel discovery ──
     async def _discover(self) -> list[Candidate]:
         agents = [f(self.ctx, parent_id=self.agent_id) for f in self.discovery]
+        # the LLM brain runs ALONGSIDE the deterministic fuzzer: it fans out
+        # specialist lens sub-agents whose hypotheses the oracles then prove.
+        if self.llm is not None and getattr(self.llm, "available", False):
+            from .agents.llm_strategist import LLMStrategistAgent
+            agents.append(LLMStrategistAgent(self.ctx, parent_id=self.agent_id,
+                                             harness=self.harness, llm=self.llm))
         results = await asyncio.gather(*[a.execute() for a in agents],
                                        return_exceptions=True)
         candidates: list[Candidate] = []

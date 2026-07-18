@@ -44,15 +44,16 @@ def _persist(ctx: JobContext, findings: list[Finding]) -> None:
 
 
 async def run_job(ctx: JobContext, *, discovery: list[Callable],
-                  oracles: list[Oracle],
-                  escalation: list[Oracle] | None = None) -> list[Finding]:
+                  oracles: list[Oracle], escalation: list[Oracle] | None = None,
+                  llm=None, harness: str = "") -> list[Finding]:
     ctx.bus.append(EventType.JOB_START,
                    target=getattr(ctx.target, "name", "") or ctx.job_id,
-                   target_type=getattr(ctx.target, "target_type", ""))
+                   target_type=getattr(ctx.target, "target_type", ""),
+                   llm=getattr(llm, "model", None) if getattr(llm, "available", False) else None)
     findings: list[Finding] = []
     try:
         coord = Coordinator(ctx, discovery=discovery, oracles=oracles,
-                            escalation=escalation)
+                            escalation=escalation, llm=llm, harness=harness)
         findings = await coord.execute() or []
         # governance: collapse duplicate bugs, classify novelty (never auto-0day)
         from .dedup import dedupe
@@ -77,22 +78,25 @@ async def run_job(ctx: JobContext, *, discovery: list[Callable],
 
 
 def lab_job(job_id: str, harness: str, *, artifacts_root: Optional[Path] = None,
-            name: str = "lab-target", max_tries: int = 8, escalate: bool = True
-            ) -> tuple[JobContext, list[Callable], list[Oracle], list[Oracle]]:
-    """Assemble the LLM-free end-to-end: fuzz a harness → sanitizer-prove it →
-    escalate the fault toward a controlled primitive.
+            name: str = "lab-target", max_tries: int = 8, escalate: bool = True,
+            provider: Optional[str] = None, model: Optional[str] = None,
+            api_key: Optional[str] = None, base_url: Optional[str] = None):
+    """Assemble the end-to-end: fuzz + (optional) LLM brain → sanitizer-prove →
+    escalate (+ LLM synthesis) toward a controlled primitive.
 
-    Returns (ctx, discovery, oracles, escalation). `max_tries` bounds the fuzz
-    loop. Each sanitized run is fast on Linux/Docker but ~15s on macOS (an ASan
-    shadow-setup wait), so keep it low for local dev.
+    Returns (ctx, discovery, oracles, escalation, llm). With a provider selected,
+    the LLM brain runs alongside the fuzzer and LLM synthesis aids escalation;
+    without one it's NullLLM and the deterministic pipeline is unchanged.
     """
+    from .llm import make_client
     root = artifacts_root or (Path.cwd() / "runs")
     target = SourceTarget(root / job_id / "work", name=name)
     ctx = JobContext(job_id, target=target, artifacts_root=root)
     discovery = [partial(FuzzDiscoveryAgent, harness=harness, max_tries=max_tries)]
     oracles: list[Oracle] = [SanitizerOracle()]
     escalation: list[Oracle] = [ControllabilityOracle()] if escalate else []
-    return ctx, discovery, oracles, escalation
+    llm = make_client(provider, model, api_key, base_url)
+    return ctx, discovery, oracles, escalation, llm
 
 
 def binary_lab_job(job_id: str, binary_path: str, *,
