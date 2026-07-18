@@ -93,24 +93,35 @@ class LibFuzzerDiscoveryAgent(Agent):
         return []
 
     def _candidate(self, inp: bytes, crash, fr: fuzzengine.FuzzResult) -> Candidate:
-        top = crash.top
-        return Candidate(
-            bug_class=self.bug_class,
-            title=crash.summary or f"{crash.bug_type} crash (libFuzzer)",
+        return build_candidate(
+            inp=inp, crash=crash, harness=self.harness,
+            target_sources=self.target_sources, include_dirs=self.include_dirs,
+            sanitizer=self.sanitizer, bug_class=self.bug_class, agent=self.name,
             rationale=f"coverage-guided fuzzing reached cov={fr.coverage} in "
                       f"{fr.execs:,} execs and found a {len(inp)}-byte input "
-                      f"triggering {crash.bug_type}",
-            location=CodeLoc(path=top.file if top else "",
-                             line=top.line if top else 0,
-                             symbol=top.func if top else ""),
-            agent=self.name,
-            proposed_check={"harness": self.harness,
-                            "input_b64": base64.b64encode(inp).decode(),
-                            "libfuzzer": True,
-                            "sanitizer": self.sanitizer,
-                            "target_sources": [str(p) for p in self.target_sources]
-                            or None,
-                            "include_dirs": [str(p) for p in self.include_dirs]
-                            or None},
-            crash={"bug_type": crash.bug_type, "stack_hash": crash.stack_hash},
-        )
+                      f"triggering {crash.bug_type}")
+
+
+def build_candidate(*, inp: bytes, crash, harness: str, target_sources,
+                    include_dirs, sanitizer: str, bug_class: str, agent: str,
+                    rationale: str = "") -> Candidate:
+    """Shared: turn a libFuzzer crash into a Candidate the SanitizerOracle can
+    independently rebuild + replay. Used by both the plain and co-driving fuzzers."""
+    top = crash.top
+    return Candidate(
+        bug_class=bug_class,
+        title=crash.summary or f"{crash.bug_type} crash (libFuzzer)",
+        rationale=rationale or f"fuzzing found a {len(inp)}-byte input triggering "
+                               f"{crash.bug_type}",
+        location=CodeLoc(path=top.file if top else "",
+                         line=top.line if top else 0,
+                         symbol=top.func if top else ""),
+        agent=agent,
+        proposed_check={"harness": harness,
+                        "input_b64": base64.b64encode(inp).decode(),
+                        "libfuzzer": True,
+                        "sanitizer": sanitizer,
+                        "target_sources": [str(p) for p in target_sources] or None,
+                        "include_dirs": [str(p) for p in include_dirs] or None},
+        crash={"bug_type": crash.bug_type, "stack_hash": crash.stack_hash},
+    )

@@ -24,7 +24,7 @@ from ..events import EventType
 from ..ingest import repo as _repo
 from ..ladder import Candidate
 from .base import Agent
-from .libfuzzer_discovery import LibFuzzerDiscoveryAgent
+from .codrive import CoDrivingFuzzAgent
 
 # A harness that never enters target code stalls at a handful of edges; a live one
 # exploring a parser climbs fast. Below this after a probe → dead, discarded.
@@ -52,6 +52,8 @@ class HarnessSynthAgent(Agent):
                  max_targets: int = 3, fuzz_time: int = 30,
                  probe_time: int = 6, corpus_root: Optional[Path] = None,
                  sources: Optional[list] = None, focus_note: str = "",
+                 focus_function: str = "", guard_context: str = "",
+                 dict_tokens: Optional[list] = None,
                  sanitizer: str = "address", corpus_tag: str = "h") -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.repo = repo or getattr(ctx, "repo", None)
@@ -59,6 +61,9 @@ class HarnessSynthAgent(Agent):
         self.max_targets = max_targets
         self.fuzz_time = fuzz_time
         self.probe_time = probe_time
+        self.focus_function = focus_function      # Phase J: aim the fuzzer here
+        self.guard_context = guard_context        # sink source for LLM seed-craft
+        self.dict_tokens = list(dict_tokens or [])
         self.sanitizer = sanitizer
         self.corpus_root = Path(corpus_root) if corpus_root else ctx.artifacts / "corpus"
         # When the reasoning tier aims us at specific sources/sinks (Phase I), we
@@ -101,11 +106,15 @@ class HarnessSynthAgent(Agent):
                 self.log(f"discarded dead/uncompilable harness for {src.name}: {why}")
                 continue
 
-            self.log(f"live harness for {src.name} (probe cov={cov}) — full fuzz")
+            self.log(f"live harness for {src.name} (probe cov={cov}) — co-driving fuzz"
+                     + (f" aimed at {self.focus_function}()" if self.focus_function else ""))
+            rounds = 4
             child = self.child(
-                LibFuzzerDiscoveryAgent, harness=harness, target_sources=[src],
-                include_dirs=incs, corpus_dir=corpus, sanitizer=self.sanitizer,
-                max_total_time=self.fuzz_time)
+                CoDrivingFuzzAgent, harness=harness, target_sources=[src],
+                include_dirs=incs, corpus_dir=corpus, llm=self.llm,
+                focus_function=self.focus_function, guard_context=self.guard_context,
+                dict_tokens=self.dict_tokens, sanitizer=self.sanitizer,
+                rounds=rounds, round_time=max(6, self.fuzz_time // rounds))
             candidates.extend(await child.execute() or [])
 
         self.log(f"{len(candidates)} candidate(s) from {self.max_targets} "

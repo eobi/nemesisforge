@@ -86,21 +86,33 @@ class VariantHunterAgent(Agent):
             self.log("reasoning produced no nominations — harnessing top sinks")
             nominated = self._auto_nominate(ranked)
 
-        # 3. aim a harness-synth sub-agent at each nominated source.
-        by_file: dict[str, str] = {}
+        # 3. aim a harness-synth + co-driving-fuzz sub-agent at each nominated
+        # source, carrying the sink's function + guard code so the loop can craft
+        # inputs that reach it (Phase J).
+        by_file: dict[str, dict] = {}
         for nom in nominated:
             f = self._resolve_src(nom.get("file", ""))
-            if f and str(f) not in by_file:
-                by_file[str(f)] = f"reach {nom.get('function','?')}() — {nom.get('why','')}"
-                self.em.emit(EventType.CANDIDATE, title=f"suspect: {nom.get('function','?')}",
-                             bug_class="memory_safety", agent=self.name,
-                             why=nom.get("why", ""))
+            if not f or str(f) in by_file:
+                continue
+            fn = nom.get("function", "") or ""
+            guard = cscan.func_body(ci, fn)
+            by_file[str(f)] = {
+                "note": f"reach {fn or '?'}() — {nom.get('why','')}",
+                "focus": fn if fn in ci.funcs else "",
+                "guard": guard,
+                "dict": cscan.guard_tokens(guard) if guard else [],
+            }
+            self.em.emit(EventType.CANDIDATE, title=f"suspect: {fn or '?'}",
+                         bug_class="memory_safety", agent=self.name,
+                         why=nom.get("why", ""))
 
         candidates: list[Candidate] = []
-        for i, (fpath, note) in enumerate(list(by_file.items())[:self.max_targets]):
+        for i, (fpath, meta) in enumerate(list(by_file.items())[:self.max_targets]):
             child = self.child(
                 HarnessSynthAgent, repo=self.repo, llm=self.llm,
-                sources=[Path(fpath)], focus_note=note, fuzz_time=self.fuzz_time,
+                sources=[Path(fpath)], focus_note=meta["note"],
+                focus_function=meta["focus"], guard_context=meta["guard"],
+                dict_tokens=meta["dict"], fuzz_time=self.fuzz_time,
                 sanitizer=self.sanitizer, corpus_root=self.corpus_root,
                 corpus_tag=f"v{i}_")
             candidates.extend(await child.execute() or [])

@@ -212,6 +212,36 @@ def scan_repo(sources: Iterable[Path]) -> CodeIntel:
     return ci
 
 
+def guard_tokens(text: str, *, limit: int = 48) -> list[str]:
+    """Literal tokens in code that look like input guards — string/char literals
+    and hex magic numbers — for a targeted libFuzzer dictionary that helps the
+    fuzzer clear the guards on the way to a sink."""
+    toks: set[str] = set()
+    toks |= set(re.findall(r'"([ -~]{2,32})"', text))
+    toks |= set(re.findall(r"'([ -~]{1,8})'", text))
+    for m in re.findall(r"\b0x[0-9A-Fa-f]{2,8}\b", text):
+        toks.add(m)
+    return sorted(t for t in toks if t)[:limit]
+
+
+def write_dict(tokens: list[str], path: Path) -> Optional[Path]:
+    """Write a libFuzzer dictionary from tokens; returns the path or None."""
+    toks = [t for t in tokens if t]
+    if not toks:
+        return None
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    esc = [t.replace("\\", "\\\\").replace('"', '\\"') for t in toks]
+    path.write_text("\n".join(f'kw{i}="{t}"' for i, t in enumerate(esc)))
+    return path
+
+
+def func_body(ci: "CodeIntel", name: str, *, max_chars: int = 2000) -> str:
+    """The source of a function (the sink's guard context for the LLM)."""
+    fn = ci.funcs.get(name)
+    return (fn.body[:max_chars] if fn else "")
+
+
 def summarize_sinks(sinks: list[Sink], *, limit: int = 20) -> str:
     """Compact, ranked view for an LLM prompt — the reasoning context."""
     out = []

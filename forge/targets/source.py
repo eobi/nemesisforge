@@ -110,21 +110,35 @@ class SourceTarget:
 
     def fuzz(self, binary: Path, *, corpus_dir: Optional[Path] = None,
              dict_path: Optional[Path] = None, max_total_time: int = 20,
-             max_len: int = 4096, timeout: Optional[float] = None
+             max_len: int = 4096, timeout: Optional[float] = None,
+             focus_function: str = "", seeds: Optional[Sequence[bytes]] = None
              ) -> fuzzengine.FuzzResult:
         """Run a libFuzzer binary with coverage feedback + corpus + dictionary.
 
-        Returns the first crashing input (if any) plus coverage stats. The
-        crashing input is emitted as a Candidate whose crash the SanitizerOracle
-        then independently rebuilds + replays (writer ≠ validator)."""
+        Phase-J directed fuzzing: `focus_function` steers libFuzzer's energy toward
+        inputs that reach a specific function (the sink the reasoning tier
+        nominated), and `seeds` injects LLM-crafted guard-passing inputs into the
+        corpus so the fuzzer mutates onward from them.
+
+        Returns the first crashing input (if any) plus coverage stats. The crashing
+        input is emitted as a Candidate whose crash the SanitizerOracle then
+        independently rebuilds + replays (writer ≠ validator)."""
         art = binary.parent
+        if corpus_dir:
+            corpus_dir = Path(corpus_dir)
+            corpus_dir.mkdir(parents=True, exist_ok=True)
+            for i, s in enumerate(seeds or []):
+                # a deterministic name so re-injecting the same seed is idempotent
+                (corpus_dir / f"seed_{len(s)}_{abs(hash(bytes(s))) & 0xffffff:06x}"
+                 ).write_bytes(bytes(s))
         argv = [str(binary), f"-max_total_time={int(max_total_time)}",
                 f"-max_len={int(max_len)}", f"-artifact_prefix={art}/",
                 "-print_final_stats=1"]
+        if focus_function:
+            argv.append(f"-focus_function={focus_function}")
         if dict_path and Path(dict_path).exists():
             argv.append(f"-dict={dict_path}")
         if corpus_dir:
-            Path(corpus_dir).mkdir(parents=True, exist_ok=True)
             argv.append(str(corpus_dir))
         # libFuzzer needs headroom over max_total_time; also lift the sandbox CPU
         # cap for the duration of the fuzz so a long budget isn't SIGXCPU-killed.
@@ -147,7 +161,13 @@ class SourceTarget:
                 crash_input = hits[0].read_bytes()
                 break
         cov, ft, execs, eps, corp = fuzzengine.parse_stats(res.output)
-        crashed = crash_input is not None or "ERROR: " in res.output
+        # A real crash always writes an artifact; key off that, plus explicit
+        # sanitizer/deadly-signal signatures. (Do NOT treat any "ERROR:" as a
+        # crash — libFuzzer prints benign ERRORs like a failed focus-function.)
+        crashed = crash_input is not None or any(
+            sig in res.output for sig in
+            ("ERROR: AddressSanitizer", "ERROR: libFuzzer: deadly signal",
+             "UndefinedBehaviorSanitizer:", "runtime error:"))
         return fuzzengine.FuzzResult(
             crashed=crashed, crash_input=crash_input, coverage=cov, features=ft,
             execs=execs, exec_per_s=eps, corpus=corp, output=res.output,
