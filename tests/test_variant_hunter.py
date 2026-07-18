@@ -54,7 +54,10 @@ class MockLLM:
     name, model, available = "mock", "mock-1", True
 
     def complete(self, system, user, *, max_tokens=2048):
-        return json.dumps(self._reply(user))
+        r = self._reply(user)
+        if isinstance(r, dict) and "harness" in r:   # synth → raw C, like a real model
+            return f"```c\n{r['harness']}\n```"
+        return json.dumps(r)
 
     def complete_json(self, system, user, *, max_tokens=4096):
         return self._reply(user), {"cost_usd": 0.0}

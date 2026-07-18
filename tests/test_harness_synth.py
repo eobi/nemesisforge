@@ -66,7 +66,7 @@ class MockLLM:
         self._h = harness
 
     def complete(self, system, user, *, max_tokens=2048):
-        return json.dumps({"harness": self._h, "entry": "mini_parse"})
+        return f"```c\n{self._h}\n```"          # real models return raw C
 
     def complete_json(self, system, user, *, max_tokens=4096):
         return {"harness": self._h, "entry": "mini_parse"}, {"cost_usd": 0.0}
