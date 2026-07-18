@@ -74,8 +74,10 @@ def test_llm_seed_unlocks_the_guard_and_oracle_certifies(tmp_path):
     cands = asyncio.run(agent.execute())
     assert cands, "the co-driving loop should crack the guard via the LLM seed"
 
-    # the loop actually consulted the LLM on a stall (crafted a guard-passing seed)
-    assert any(e.type == EventType.POC_WRITTEN for e in ctx.bus.all())
+    # the loop actually consulted the LLM on a stall (crafted a guard-passing seed);
+    # a seed is SEED, not POC_WRITTEN (which is reserved for real authored exploits)
+    assert any(e.type == EventType.SEED for e in ctx.bus.all())
+    assert not any(e.type == EventType.POC_WRITTEN for e in ctx.bus.all())
 
     v = SanitizerOracle().verify(ctx, cands[0])
     assert v.outcome is Outcome.PROVEN

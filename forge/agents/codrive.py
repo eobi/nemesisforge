@@ -140,7 +140,10 @@ class CoDrivingFuzzAgent(Agent):
             if seed and seed not in asked:
                 asked.add(seed)
                 seeds = [seed]
-                self.em.emit(EventType.POC_WRITTEN, title="guard-passing seed",
+                # A guard-passing SEED is corpus fuel to reach deeper — NOT an
+                # exploit. Emit SEED, not POC_WRITTEN, so crash/PoC counts (and the
+                # monitor) never false-positive on co-driving seeds.
+                self.em.emit(EventType.SEED, title="guard-passing seed",
                              rationale=f"reach {self.focus_function or 'sink'} "
                                        f"(round {i}, {len(seed)} bytes)")
 

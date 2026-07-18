@@ -260,12 +260,17 @@ def binary_lab_job(job_id: str, binary_path: str, *,
     from .oracles.binary_crash import BinaryCrashOracle
     from .oracles.symbolic import SymbolicOracle
     from .targets.binary import BinaryTarget
+    from .agents.binary_recon import BinaryReconAgent
 
     root = artifacts_root or (Path.cwd() / "runs")
     target = BinaryTarget(binary_path, name=name)
     ctx = JobContext(job_id, target=target, artifacts_root=root)
+    # Multi-lens on binaries too: the RE lens (imports/strings triage) flags sink
+    # functions in parallel with the concrete fuzzer, and corroborates a crash that
+    # lands in a flagged routine.
     discovery = [partial(FuzzDiscoveryAgent, harness="", bug_class="binary_crash",
-                         max_tries=max_tries)]
+                         max_tries=max_tries),
+                 partial(BinaryReconAgent, binary=Path(binary_path))]
     oracles: list[Oracle] = [BinaryCrashOracle()]
     escalation: list[Oracle] = [SymbolicOracle()]
     return ctx, discovery, oracles, escalation
