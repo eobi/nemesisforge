@@ -176,7 +176,7 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
              seed_patch: str = "", sanitizer: Optional[str] = None,
              artifacts_root: Optional[Path] = None, max_targets: int = 3,
              fuzz_time: int = 30, campaign_minutes: int = 0, escalate: bool = True,
-             use_build_system: bool = True,
+             use_build_system: bool = True, use_symbolic: bool = True,
              provider: Optional[str] = None, model: Optional[str] = None,
              api_key: Optional[str] = None, base_url: Optional[str] = None):
     """Point Forge at a real open-source repo by URL: clone → the LLM synthesizes
@@ -237,7 +237,7 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     # harness-synth sub-agents, so it subsumes the plain-synth path.
     vh = dict(max_targets=max_targets, fuzz_time=fuzz_time,
               campaign_minutes=campaign_minutes, changed_functions=changed,
-              seed_patch=patch, corpus_root=corpus_root)
+              seed_patch=patch, corpus_root=corpus_root, symbolic=use_symbolic)
     if sanitizer:                          # e.g. "address" — hunt real corruption,
         vh["sanitizer"] = sanitizer        # not benign UB that halts the fuzzer early
     # Multi-lens: the dynamic fuzzer + a SOURCE-code static-analysis lens run in

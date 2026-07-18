@@ -25,6 +25,7 @@ from ..ingest import repo as _repo
 from ..ladder import Candidate
 from .base import Agent
 from .codrive import CoDrivingFuzzAgent
+from .symbolic_hunter import SymbolicHunterAgent, angr_available
 
 # A harness that never enters target code stalls at a handful of edges; a live one
 # exploring a parser climbs fast. Below this after a probe → dead, discarded.
@@ -70,7 +71,7 @@ class HarnessSynthAgent(Agent):
                  focus_note: str = "",
                  focus_function: str = "", guard_context: str = "",
                  dict_tokens: Optional[list] = None, repairs: int = 2,
-                 campaign_minutes: int = 0,
+                 campaign_minutes: int = 0, symbolic: bool = False,
                  sanitizer: str = "address", corpus_tag: str = "h") -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.repo = repo or getattr(ctx, "repo", None)
@@ -93,6 +94,7 @@ class HarnessSynthAgent(Agent):
         self.sources = [Path(s) for s in sources] if sources else None
         self.focus_note = focus_note
         self.corpus_tag = corpus_tag
+        self.symbolic = symbolic          # also run the angr PATH lens per harness
 
     async def run(self) -> list[Candidate]:
         if self.llm is None or not getattr(self.llm, "available", False):
@@ -161,7 +163,26 @@ class HarnessSynthAgent(Agent):
                 dict_tokens=self.dict_tokens, sanitizer=self.sanitizer,
                 campaign_minutes=self.campaign_minutes,
                 rounds=rounds, round_time=max(6, self.fuzz_time // rounds))
-            candidates.extend(await child.execute() or [])
+            # Multi-lens: run the SYMBOLIC (angr) path lens in parallel with the
+            # co-driving fuzzer on the SAME harness — it solves guards the fuzzer
+            # stalls on and flags attacker-controlled states, all confirmed by the
+            # same oracle. No-ops cleanly if angr is absent.
+            tasks = [child.execute()]
+            if self.symbolic and angr_available():
+                # Bound angr's budget to the fuzz budget so it finishes alongside
+                # the co-driving fuzzer and never dominates wall-time. (angr is
+                # most effective on Linux/ELF; on macOS Mach-O it degrades and
+                # no-ops cleanly.)
+                sym_budget = min(300, (self.campaign_minutes * 60)
+                                 or max(30, self.fuzz_time))
+                sym = self.child(
+                    SymbolicHunterAgent, harness=harness,
+                    target_sources=self.lib_sources or [src],
+                    include_dirs=incs, sanitizer=self.sanitizer,
+                    max_seconds=sym_budget)
+                tasks.append(sym.execute())
+            for res in await asyncio.gather(*tasks):
+                candidates.extend(res or [])
 
         self.log(f"{len(candidates)} candidate(s) from {len(targets)} "
                  f"harnessed source(s)")

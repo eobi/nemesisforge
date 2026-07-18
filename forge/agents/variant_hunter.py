@@ -53,7 +53,7 @@ class VariantHunterAgent(Agent):
                  campaign_minutes: int = 0, parallel: int = 3,
                  sanitizer: str = "address,undefined",
                  changed_functions: Optional[set] = None, seed_patch: str = "",
-                 corpus_root: Optional[Path] = None) -> None:
+                 corpus_root: Optional[Path] = None, symbolic: bool = False) -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.repo = repo or getattr(ctx, "repo", None)
         self.llm = llm
@@ -65,6 +65,7 @@ class VariantHunterAgent(Agent):
         # Phase L3: seed from a real bug-fix patch → hunt UN-patched variants of
         # that exact pattern (Big Sleep's actual zero-day method).
         self.seed_patch = seed_patch
+        self.symbolic = symbolic                   # also run the angr path lens
         self.sanitizer = sanitizer          # ASan + UBSan by default on repos
         # Continuous mode: when set, hunt ONLY sinks in functions changed by a diff
         # (catch the regression the day the commit lands — variant analysis's edge).
@@ -139,7 +140,7 @@ class VariantHunterAgent(Agent):
                 guard_context=t["guard"], dict_tokens=t["dict"],
                 fuzz_time=self.fuzz_time, campaign_minutes=self.campaign_minutes,
                 sanitizer=self.sanitizer, corpus_root=self.corpus_root,
-                corpus_tag=_slug(t["focus"] or i))
+                symbolic=self.symbolic, corpus_tag=_slug(t["focus"] or i))
             return await child.execute() or []
 
         sem = asyncio.Semaphore(self.parallel)
@@ -213,5 +214,6 @@ class VariantHunterAgent(Agent):
         child = self.child(HarnessSynthAgent, repo=self.repo, llm=self.llm,
                            max_targets=self.max_targets, fuzz_time=self.fuzz_time,
                            campaign_minutes=self.campaign_minutes,
-                           sanitizer=self.sanitizer, corpus_root=self.corpus_root)
+                           sanitizer=self.sanitizer, corpus_root=self.corpus_root,
+                           symbolic=self.symbolic)
         return await child.execute() or []
