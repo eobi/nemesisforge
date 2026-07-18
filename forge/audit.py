@@ -85,20 +85,22 @@ class _Section:
         self.first_ts = 0.0
         self.active = False        # has this section done real work this session?
 
-    def status(self, now: float) -> str:
-        if self.errors and (self.last_ts and now - self.last_ts < _SILENT_AFTER):
-            # recent activity but errors present
-            return FAILING if self.errors >= 3 else DEGRADED
+    def status(self, now: float, *, job_active: bool) -> str:
+        # Errors always matter, running or not.
         if self.errors:
-            return DEGRADED
+            recent = self.last_ts and now - self.last_ts < _SILENT_AFTER
+            return FAILING if (self.errors >= 3 and recent) else DEGRADED
         if not self.active:
             return IDLE
-        if self.last_ts and now - self.last_ts > _SILENT_AFTER:
-            return SILENT           # was active, then went quiet — surface it
+        idle = self.last_ts and now - self.last_ts > _SILENT_AFTER
+        # `silent` is only an alarm while a job is RUNNING — a section that should
+        # be producing events but stopped. Between jobs, a quiet section is just idle.
+        if idle:
+            return SILENT if job_active else IDLE
         return HEALTHY
 
-    def snapshot(self, now: float) -> dict:
-        return {"section": self.name, "status": self.status(now),
+    def snapshot(self, now: float, *, job_active: bool) -> dict:
+        return {"section": self.name, "status": self.status(now, job_active=job_active),
                 "events": self.events, "errors": self.errors,
                 "last_error": self.last_error,
                 "idle_s": round(now - self.last_ts, 1) if self.last_ts else None}
@@ -110,11 +112,18 @@ class HealthTracker:
     def __init__(self) -> None:
         self._sections: dict[str, _Section] = {}
         self._agent_section: dict[str, str] = {}   # agent_id → section (kind)
+        self._active_jobs: set[str] = set()        # JOB_START seen, no JOB_DONE yet
         self._lock = threading.Lock()
 
     def feed(self, ev: Event) -> None:
         d = ev.data or {}
         with self._lock:
+            # Track whether any job is actively running (so `silent` only alarms
+            # mid-run, not between engagements).
+            if ev.type == EventType.JOB_START:
+                self._active_jobs.add(ev.job_id)
+            elif ev.type == EventType.JOB_DONE:
+                self._active_jobs.discard(ev.job_id)
             # Learn agent_id → section from spawn events.
             if ev.type == EventType.AGENT_SPAWNED and ev.agent_id:
                 self._agent_section[ev.agent_id] = d.get("kind") or d.get("name") \
@@ -151,15 +160,24 @@ class HealthTracker:
     def summary(self) -> dict:
         now = time.time()
         with self._lock:
-            sections = [s.snapshot(now) for s in self._sections.values()]
+            job_active = bool(self._active_jobs)
+            sections = [s.snapshot(now, job_active=job_active)
+                        for s in self._sections.values()]
         sections.sort(key=lambda x: (_SEVERITY.get(x["status"], 9), x["section"]))
         counts: dict[str, int] = defaultdict(int)
         for s in sections:
             counts[s["status"]] += 1
-        overall = FAILING if counts[FAILING] else (
-            DEGRADED if counts[DEGRADED] else (
-                SILENT if counts[SILENT] else HEALTHY))
-        return {"overall": overall if sections else IDLE,
+        if counts[FAILING]:
+            overall = FAILING
+        elif counts[DEGRADED]:
+            overall = DEGRADED
+        elif counts[SILENT]:
+            overall = SILENT
+        elif counts[HEALTHY]:
+            overall = HEALTHY
+        else:
+            overall = IDLE                 # resting between jobs — calm, not alarming
+        return {"overall": overall, "running": job_active,
                 "counts": dict(counts), "sections": sections}
 
 

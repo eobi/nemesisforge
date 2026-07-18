@@ -6,7 +6,7 @@ green, and flags a section that went quiet as SILENT."""
 import time
 
 from forge.audit import (AuditLog, HealthTracker, FAILING, DEGRADED, SILENT,
-                         HEALTHY)
+                         HEALTHY, IDLE)
 from forge.events import Event, EventType
 
 
@@ -52,10 +52,34 @@ def test_healthy_section_and_oracle_attribution():
     assert summ["overall"] == HEALTHY
 
 
-def test_silent_section_is_surfaced():
+def test_silent_only_alarms_mid_run_not_between_jobs():
     h = HealthTracker()
     old = time.time() - 600                   # active 10 minutes ago, then quiet
     h.feed(_ev(EventType.AGENT_SPAWNED, agent_id="v", kind="variant_hunter", ts=old))
     h.feed(_ev(EventType.THINK, agent_id="v", text="analyzing", ts=old))
-    sec = next(s for s in h.summary()["sections"] if s["section"] == "variant_hunter")
-    assert sec["status"] == SILENT            # we KNOW it stopped, not guessing
+
+    # No job running → a quiet section is just idle, NOT an alarm.
+    summ = h.summary()
+    assert summ["running"] is False
+    sec = next(s for s in summ["sections"] if s["section"] == "variant_hunter")
+    assert sec["status"] == IDLE
+
+    # A job IS running but variant_hunter has gone quiet → surface it as SILENT.
+    h.feed(_ev(EventType.JOB_START))          # recent → a job is active now
+    summ2 = h.summary()
+    assert summ2["running"] is True
+    sec2 = next(s for s in summ2["sections"] if s["section"] == "variant_hunter")
+    assert sec2["status"] == SILENT           # we KNOW it stalled mid-run
+
+    # When the job finishes, it stops alarming.
+    h.feed(_ev(EventType.JOB_DONE))
+    sec3 = next(s for s in h.summary()["sections"] if s["section"] == "variant_hunter")
+    assert sec3["status"] == IDLE
+
+
+def test_degraded_on_a_single_error():
+    h = HealthTracker()
+    h.feed(_ev(EventType.AGENT_SPAWNED, agent_id="r", kind="reporter"))
+    h.feed(_ev(EventType.ERROR, agent_id="r", error="one hiccup"))
+    sec = next(s for s in h.summary()["sections"] if s["section"] == "reporter")
+    assert sec["status"] == DEGRADED          # one error → amber, not red
