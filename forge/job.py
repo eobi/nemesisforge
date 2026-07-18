@@ -158,7 +158,8 @@ def lab_job(job_id: str, harness: str, *, artifacts_root: Optional[Path] = None,
 
 
 def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
-             diff_ref: Optional[str] = None,
+             diff_ref: Optional[str] = None, seed_commit: Optional[str] = None,
+             seed_patch: str = "",
              artifacts_root: Optional[Path] = None, max_targets: int = 3,
              fuzz_time: int = 30, campaign_minutes: int = 0, escalate: bool = True,
              provider: Optional[str] = None, model: Optional[str] = None,
@@ -191,13 +192,18 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     # Continuous mode (Phase K): if a diff ref is given, hunt only the functions
     # changed since it — catch a regression the day the commit lands.
     changed = _repo.changed_functions(info.root, diff_ref) if diff_ref else None
+    # Phase L3: seed variant analysis from a real bug-fix patch (its own commit, or
+    # a diff supplied from ANOTHER repo — a fix in lib A often has a twin in lib B).
+    patch = seed_patch or (_repo.patch_diff(info.root, seed_commit)
+                           if seed_commit else "")
     # The reasoning tier (Phase I): understand the code, rank reachable sinks, and
     # AIM harness synthesis + fuzzing where a bug most likely hides. It spawns
     # harness-synth sub-agents, so it subsumes the plain-synth path.
     discovery = [partial(VariantHunterAgent, repo=info, llm=llm,
                          max_targets=max_targets, fuzz_time=fuzz_time,
                          campaign_minutes=campaign_minutes,
-                         changed_functions=changed, corpus_root=corpus_root)]
+                         changed_functions=changed, seed_patch=patch,
+                         corpus_root=corpus_root)]
     oracles: list[Oracle] = [SanitizerOracle()]
     escalation: list[Oracle] = [ControllabilityOracle()] if escalate else []
     return ctx, discovery, oracles, escalation, llm

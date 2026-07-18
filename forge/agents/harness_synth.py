@@ -66,7 +66,8 @@ class HarnessSynthAgent(Agent):
                  repo: Optional[_repo.RepoInfo] = None, llm=None,
                  max_targets: int = 3, fuzz_time: int = 30,
                  probe_time: int = 6, corpus_root: Optional[Path] = None,
-                 sources: Optional[list] = None, focus_note: str = "",
+                 sources: Optional[list] = None, lib_sources: Optional[list] = None,
+                 focus_note: str = "",
                  focus_function: str = "", guard_context: str = "",
                  dict_tokens: Optional[list] = None, repairs: int = 2,
                  campaign_minutes: int = 0,
@@ -74,6 +75,9 @@ class HarnessSynthAgent(Agent):
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.repo = repo or getattr(ctx, "repo", None)
         self.llm = llm
+        # Link the harness against the WHOLE library (multi-file libs need every .c
+        # to resolve symbols), not just the nominated file.
+        self.lib_sources = [Path(s) for s in lib_sources] if lib_sources else None
         self.max_targets = max_targets
         self.fuzz_time = fuzz_time
         self.probe_time = probe_time
@@ -150,7 +154,8 @@ class HarnessSynthAgent(Agent):
                      + (f" aimed at {self.focus_function}()" if self.focus_function else ""))
             rounds = 4
             child = self.child(
-                CoDrivingFuzzAgent, harness=harness, target_sources=[src],
+                CoDrivingFuzzAgent, harness=harness,
+                target_sources=self.lib_sources or [src],
                 include_dirs=incs, corpus_dir=corpus, llm=self.llm,
                 focus_function=self.focus_function, guard_context=self.guard_context,
                 dict_tokens=self.dict_tokens, sanitizer=self.sanitizer,
@@ -212,7 +217,7 @@ class HarnessSynthAgent(Agent):
         target = self.ctx.target
         build = await asyncio.to_thread(
             target.build, harness, fuzzer=True, sanitizer=self.sanitizer,
-            target_sources=[src], include_dirs=incs)
+            target_sources=self.lib_sources or [src], include_dirs=incs)
         if not build.ok:
             return False, False, 0, "build failed", build.log or ""
         fr = await asyncio.to_thread(

@@ -46,6 +46,7 @@ class RepoInfo:
     build_system: str = "none"          # cmake | make | autotools | meson | none
     sources: list[Path] = field(default_factory=list)   # ranked entry-point .c
     headers: list[Path] = field(default_factory=list)
+    library: list[Path] = field(default_factory=list)    # ALL lib .c to link against
 
 
 def clone(url: str, dest: Path, *, ref: Optional[str] = None,
@@ -67,6 +68,7 @@ def clone(url: str, dest: Path, *, ref: Optional[str] = None,
         info.build_system = detect_build_system(dest)
         info.sources = rank_sources(dest)
         info.headers = _find(dest, {".h", ".hpp"}, limit=200)
+        info.library = library_sources(dest)
         return info
 
     if not _is_safe_url(url):
@@ -85,6 +87,7 @@ def clone(url: str, dest: Path, *, ref: Optional[str] = None,
     info.build_system = detect_build_system(dest)
     info.sources = rank_sources(dest)
     info.headers = _find(dest, {".h", ".hpp"}, limit=200)
+    info.library = library_sources(dest)
     return info
 
 
@@ -231,6 +234,38 @@ def changed_functions(root: Path, since_ref: str, *, timeout: int = 60) -> set[s
             if any(f.start <= ln <= f.end for ln in lines):
                 funcs.add(f.name)
     return funcs
+
+
+def patch_diff(root: Path, commit: str, *, timeout: int = 60,
+               max_chars: int = 6000) -> str:
+    """The diff of a bug-fixing commit — the SEED for variant analysis. `git show`
+    the commit (works on any ref: a hash, tag, or `HEAD~1`)."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root), "show", "--no-color", "--unified=3", commit],
+            capture_output=True, text=True, timeout=timeout)
+        return r.stdout[:max_chars] if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def library_sources(root: Path, *, limit: int = 250) -> list[Path]:
+    """ALL of a library's own .c/.cc files (so a harness against a MULTI-file
+    library LINKS — mpack/canboat/ISOBMFF, not just single-file cJSON/amalgamations).
+    Excludes test/example/fuzz dirs and any file with its own main() (which would
+    clash with libFuzzer's main)."""
+    out: list[Path] = []
+    for p in _find(root, _SRC_EXT, limit=2000):
+        try:
+            text = p.read_text(errors="replace")
+        except Exception:
+            continue
+        if re.search(r"\bint\s+main\s*\(", text):     # would clash with libFuzzer
+            continue
+        out.append(p)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def entry_snippet(path: Path, *, max_lines: int = 120) -> str:

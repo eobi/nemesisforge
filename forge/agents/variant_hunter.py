@@ -52,7 +52,7 @@ class VariantHunterAgent(Agent):
                  max_sources: int = 8, max_targets: int = 3, fuzz_time: int = 30,
                  campaign_minutes: int = 0, parallel: int = 3,
                  sanitizer: str = "address,undefined",
-                 changed_functions: Optional[set] = None,
+                 changed_functions: Optional[set] = None, seed_patch: str = "",
                  corpus_root: Optional[Path] = None) -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.repo = repo or getattr(ctx, "repo", None)
@@ -62,6 +62,9 @@ class VariantHunterAgent(Agent):
         self.fuzz_time = fuzz_time
         self.campaign_minutes = campaign_minutes   # Phase L: long persistent runs
         self.parallel = max(1, parallel)           # concurrent harness campaigns
+        # Phase L3: seed from a real bug-fix patch → hunt UN-patched variants of
+        # that exact pattern (Big Sleep's actual zero-day method).
+        self.seed_patch = seed_patch
         self.sanitizer = sanitizer          # ASan + UBSan by default on repos
         # Continuous mode: when set, hunt ONLY sinks in functions changed by a diff
         # (catch the regression the day the commit lands — variant analysis's edge).
@@ -79,8 +82,9 @@ class VariantHunterAgent(Agent):
             self.log("no libFuzzer-capable clang")
             return []
 
-        self.objective(f"variant analysis on {self.repo.url} — rank reachable "
-                       f"sinks, aim the fuzzer where a bug likely hides")
+        mode = ("patch-seeded variant hunt — find un-patched twins of a known bug"
+                if self.seed_patch else "rank reachable sinks + aim the fuzzer")
+        self.objective(f"variant analysis on {self.repo.url} — {mode}")
 
         # 1. static understanding — functions, call graph, reachable sinks.
         srcs = self.repo.sources[:self.max_sources]
@@ -130,11 +134,12 @@ class VariantHunterAgent(Agent):
         async def _hunt(t, i):
             child = self.child(
                 HarnessSynthAgent, repo=self.repo, llm=self.llm,
-                sources=[t["src"]], focus_note=t["note"],
-                focus_function=t["focus"], guard_context=t["guard"],
-                dict_tokens=t["dict"], fuzz_time=self.fuzz_time,
-                campaign_minutes=self.campaign_minutes, sanitizer=self.sanitizer,
-                corpus_root=self.corpus_root, corpus_tag=_slug(t["focus"] or i))
+                sources=[t["src"]], lib_sources=self.repo.library,
+                focus_note=t["note"], focus_function=t["focus"],
+                guard_context=t["guard"], dict_tokens=t["dict"],
+                fuzz_time=self.fuzz_time, campaign_minutes=self.campaign_minutes,
+                sanitizer=self.sanitizer, corpus_root=self.corpus_root,
+                corpus_tag=_slug(t["focus"] or i))
             return await child.execute() or []
 
         sem = asyncio.Semaphore(self.parallel)
@@ -153,8 +158,29 @@ class VariantHunterAgent(Agent):
         return candidates
 
     async def _reason(self, ranked: list[cscan.Sink]) -> list[dict]:
+        sinks = cscan.summarize_sinks(ranked, limit=20)
+        if self.seed_patch:
+            # Variant analysis: find UN-patched twins of a known, just-fixed bug.
+            system = (
+                "You are doing variant analysis. A memory-safety bug was just FIXED "
+                "by the patch below. Bugs like it often have un-fixed TWINS — the "
+                "same mistake copy-pasted or repeated elsewhere. Given the target's "
+                "sinks, nominate functions that contain the SAME pattern the patch "
+                "fixed but do NOT appear to be fixed. "
+                'Reply ONLY JSON: a list of {"file":"<name>","function":"<fn>",'
+                '"why":"<the shared pattern>"}.')
+            prompt = (f"The bug-fix patch:\n```diff\n{self.seed_patch[:5000]}\n```\n\n"
+                      f"Target sinks (reachable, input-influenced):\n{sinks}\n\n"
+                      f"Nominate un-patched variants of the fixed bug.")
+            try:
+                parsed, _m = await asyncio.to_thread(
+                    self.llm.complete_json, system, prompt)
+            except Exception as e:
+                self.log(f"variant reasoning failed: {type(e).__name__}")
+                return []
+            return [x for x in (parsed or []) if isinstance(x, dict)]
         prompt = ("Reachable, input-influenced sinks (ranked):\n"
-                  + cscan.summarize_sinks(ranked, limit=20)
+                  + sinks
                   + "\n\nNominate the most suspicious targets.")
         try:
             parsed, _meta = await asyncio.to_thread(
