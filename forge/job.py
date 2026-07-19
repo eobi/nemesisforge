@@ -234,6 +234,8 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     llm = make_client(provider, model, api_key, base_url)
     # Continuous mode (Phase K): if a diff ref is given, hunt only the functions
     # changed since it — catch a regression the day the commit lands.
+    ctx.llm = llm                        # so run_job/misuse-triage can reach it even
+                                         # if a caller doesn't thread llm into run_job
     changed = _repo.changed_functions(info.root, diff_ref) if diff_ref else None
     # Phase L3: seed variant analysis from a real bug-fix patch (its own commit, or
     # a diff supplied from ANOTHER repo — a fix in lib A often has a twin in lib B).

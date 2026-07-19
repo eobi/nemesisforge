@@ -131,6 +131,7 @@ async def review(ctx, findings, llm) -> None:
     A confident 'artifact' is de-rated (novelty='artifact') so it never reads as a
     zero-day candidate; everything else is left as-is. Conservative: never hides a
     finding, only annotates + counts."""
+    llm = llm or getattr(ctx, "llm", None)      # callers may not thread llm into run_job
     if llm is None or not getattr(llm, "available", False):
         return
     repo = getattr(ctx, "repo", None)
