@@ -46,7 +46,11 @@ _ANTI_ARTIFACT = (
     "- Size any OUTPUT buffer correctly and generously for the ONE decode/parse call "
     "you make; never reuse one buffer across calls that need different sizes.\n"
     "- Prefer ONE documented entry point per harness with correct setup. A crash must "
-    "be the LIBRARY's fault on untrusted input, not the harness mis-using the API.\n")
+    "be the LIBRARY's fault on untrusted input, not the harness mis-using the API.\n"
+    "- Call ONLY functions DECLARED in the given public header. NEVER call internal or "
+    "static helper functions (they are not visible/linkable from a separate harness "
+    "translation unit and the build fails with 'undeclared function'). Reach internal "
+    "code THROUGH the public entry point, not by calling it directly.\n")
 
 _SYSTEM = (
     "You are a fuzzing engineer. Write a libFuzzer harness in C for the given "
