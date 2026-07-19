@@ -99,6 +99,13 @@ async def run_job(ctx: JobContext, *, discovery: list[Callable],
             if ver["status"] == cve_check.KNOWN:
                 f.novelty = "n-day"          # matched a real advisory
         corpus.save()
+        # API-misuse triage: a proven crash can be the HARNESS's fault (mis-sized
+        # buffer, attacker data as a size/filename param, invalid API combo) rather
+        # than a library bug. Flag those so an artifact never reads as a zero-day
+        # candidate (what adpcm-xq turned out to be). Annotates + de-rates only;
+        # never deletes a finding — a human still decides.
+        from . import misuse_triage
+        await misuse_triage.review(ctx, findings, llm)
         unver = sum(1 for f in findings if f.novelty == "candidate")
         if findings:
             ctx.bus.append(EventType.LOG,
