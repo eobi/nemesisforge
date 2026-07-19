@@ -12,7 +12,7 @@ TARGETS="${3:-4}"
 SAN="${4:-address}"
 
 exec python3 - "$URL" "$MINS" "$TARGETS" "$SAN" <<'PY'
-import asyncio, sys, uuid, time, json
+import asyncio, os, sys, uuid, time, json
 from pathlib import Path
 from forge.config import load_env
 load_env()                                   # reads /forge/.env (mounted)
@@ -28,7 +28,7 @@ async def main():
     ctx, discovery, oracles, escalation, llm = repo_job(
         jid, url, artifacts_root=root, max_targets=targets, fuzz_time=120,
         campaign_minutes=mins, sanitizer=san,
-        use_build_system=True, use_symbolic=True,
+        use_build_system=True, use_symbolic=(os.environ.get("FORGE_SYMBOLIC")=="1"),
         provider="anthropic", model="claude-opus-4-8")
     bs = ctx.build_system
     print(f"[{time.strftime('%H:%M:%S')}] build_system={bs} "
