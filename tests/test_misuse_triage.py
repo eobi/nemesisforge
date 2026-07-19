@@ -75,6 +75,24 @@ def test_single_dissent_cannot_flip_real():
     assert f.artifacts["misuse_review"]["verdict"] == "real"
 
 
+def test_benign_ub_marked_low_severity():
+    # a misaligned-load UBSan finding is real library behavior but low-severity/by-design
+    ctx, _ = _ctx()
+    f = SimpleNamespace(
+        novelty="candidate", artifacts={},
+        candidate=SimpleNamespace(
+            proposed_check={"harness": "x"}, bug_class="memory_safety",
+            title="load of misaligned address 0x61 for type 'uint16_t'"),
+        verdict=SimpleNamespace(evidence={"crash": {
+            "bug_type": "undefined-behavior",
+            "frames": [{"func": "cw_unpack_next", "file": "cwpack.c", "line": 516}]}}))
+    # even a mock LLM that would say 'real' shouldn't be consulted — filtered first
+    asyncio.run(misuse_triage.review(ctx, [f], _MockLLM("real")))
+    assert f.novelty == "low-severity"
+    assert f.artifacts["severity"]["level"] == "low"
+    assert "misuse_review" not in f.artifacts        # panel was skipped
+
+
 def test_majority_artifact_derates():
     # panel votes artifact/artifact/real → majority artifact → de-rated
     ctx, _ = _ctx()

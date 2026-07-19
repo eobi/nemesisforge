@@ -53,6 +53,25 @@ _SYSTEM = (
 )
 
 
+# Undefined-behavior classes that are REAL but low-severity and usually by-design —
+# not memory corruption, not a reportable vulnerability. Fast binary parsers routinely
+# do unaligned reads on purpose (CWPack's getDDItem macros); UBSan flags them but they
+# are benign on x86/ARM64 and a portability nit at worst. Kept out of the zero-day
+# candidate bucket so a "real library behavior" verdict isn't mistaken for "severe".
+_BENIGN_UB = re.compile(r"misaligned address|load of misaligned|unaligned|"
+                        r"member access within misaligned", re.I)
+
+
+def _benign_ub(finding) -> str:
+    cr = (getattr(finding.verdict, "evidence", None) or {}).get("crash", {})
+    bt = (cr.get("bug_type") or "").lower()
+    title = getattr(finding.candidate, "title", "") or ""
+    if "undefined" in bt and _BENIGN_UB.search(title):
+        return ("misaligned-load UB — undefined behavior but NOT memory corruption; "
+                "intentional unaligned read in most fast parsers, benign on x86/ARM64")
+    return ""
+
+
 def _alloc_in_harness(finding) -> Optional[bool]:
     """From the crash evidence: was the overflowed region allocated in the harness?
     Returns True (harness), False (library/elsewhere), or None (unknown)."""
@@ -172,9 +191,22 @@ async def review(ctx, findings, llm) -> None:
     if llm is None or not getattr(llm, "available", False):
         return
     repo = getattr(ctx, "repo", None)
-    targets = [f for f in findings
-               if getattr(f, "novelty", "") == "candidate"
-               and getattr(f.candidate, "bug_class", "") == "memory_safety"]
+    cands = [f for f in findings
+             if getattr(f, "novelty", "") == "candidate"
+             and getattr(f.candidate, "bug_class", "") == "memory_safety"]
+    # De-prioritize benign, by-design undefined behavior (misaligned reads) BEFORE the
+    # panel — real library behavior, but low-severity and not a reportable vuln.
+    targets = []
+    for f in cands:
+        why = _benign_ub(f)
+        if why:
+            f.novelty = "low-severity"
+            f.artifacts["severity"] = {"level": "low", "reason": why}
+            ctx.bus.append(EventType.LOG,
+                           text=f"triage: {f.candidate.title[:60]} → LOW-SEVERITY "
+                                f"(by-design UB, not a vuln)")
+        else:
+            targets.append(f)
     if not targets:
         return
     verdicts = await asyncio.gather(*[_vote(f, repo, llm) for f in targets])

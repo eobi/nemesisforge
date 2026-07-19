@@ -36,7 +36,7 @@ def _factory(url: str, seed, minutes: int):
         jid = "variant-" + uuid.uuid4().hex[:8]
         ctx, discovery, oracles, escalation, _llm = repo_job(
             jid, url, artifacts_root=Path.cwd() / "runs", max_targets=4,
-            fuzz_time=120, campaign_minutes=minutes, sanitizer="address,undefined",
+            fuzz_time=120, campaign_minutes=minutes, sanitizer=__import__("os").environ.get("FORGE_SAN","address"),
             seed_patch=seed.pattern, use_build_system=True, use_symbolic=False,
             provider=__import__("os").environ.get("FORGE_PROVIDER","openai"), model=__import__("os").environ.get("FORGE_MODEL","gpt-5.1"))
         return ctx, discovery, oracles, escalation
