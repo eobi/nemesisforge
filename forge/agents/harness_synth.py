@@ -31,6 +31,23 @@ from .symbolic_hunter import SymbolicHunterAgent, angr_available
 # exploring a parser climbs fast. Below this after a probe → dead, discarded.
 _LIVE_COV = 3
 
+# Anti-artifact rules keep the harness from crashing on ITS OWN mistakes (NULL
+# required args, mis-sized buffers, fuzz bytes used as a size/filename) instead of a
+# real library bug — the exact false positives the misuse-triage exists to catch.
+_ANTI_ARTIFACT = (
+    "- Fuzz ONLY the untrusted INPUT DATA (data/size). NEVER pass the fuzz bytes as "
+    "a size, length, count, capacity, index, or filename — those are caller- "
+    "controlled, not attacker-controlled, and using them creates FALSE crashes.\n"
+    "- Provide VALID, non-NULL arguments for every REQUIRED parameter (parser/context "
+    "objects, callback/handler structs, output buffers). If a function takes a "
+    "callbacks/handlers struct, pass a real zero-initialized struct (declare a local, "
+    "`memset(&cb,0,sizeof cb)`, pass `&cb`), NOT NULL — a required pointer passed as "
+    "NULL is a HARNESS bug, not a library bug. Only omit params the docs call optional.\n"
+    "- Size any OUTPUT buffer correctly and generously for the ONE decode/parse call "
+    "you make; never reuse one buffer across calls that need different sizes.\n"
+    "- Prefer ONE documented entry point per harness with correct setup. A crash must "
+    "be the LIBRARY's fault on untrusted input, not the harness mis-using the API.\n")
+
 _SYSTEM = (
     "You are a fuzzing engineer. Write a libFuzzer harness in C for the given "
     "library so it exercises an UNTRUSTED-INPUT function (a parser/decoder/loader "
@@ -39,6 +56,7 @@ _SYSTEM = (
     "- #include the library's public header (given).\n"
     "- Feed data/size into the most attacker-facing entry point. NUL-terminate "
     "into a heap copy if the API needs a C string. Free what you allocate.\n"
+    + _ANTI_ARTIFACT +
     "- No main(), no I/O, no network. Must compile against ONLY the given "
     "header + source.\n"
     'Reply ONLY with JSON: {"harness":"<full C source>","entry":"<function you '
@@ -53,7 +71,8 @@ _SYSTEM_RAW = (
     "- #include the library's public header (given) and any libc headers you use.\n"
     "- If the API needs a C string, COPY the input into a malloc'd buffer of "
     "size+1 and NUL-terminate it; free everything you allocate.\n"
-    "- Pass NULL for optional callbacks. Guard against size==0.\n"
+    + _ANTI_ARTIFACT +
+    "- Guard against size==0.\n"
     "- PURE C ONLY: no C++ — do NOT use nullptr (use NULL), reinterpret_cast (use a "
     "C cast), lambdas, templates, `extern \"C\"`, or `//`-only C++ idioms.\n"
     "- No main(), no I/O, no network. Must compile as C against the header+source.\n"
