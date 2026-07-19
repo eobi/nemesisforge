@@ -1,0 +1,11 @@
+# Keep the build context small and secret-free.
+.git
+.env
+runs/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+*.log
+findings/
+disclosures/
