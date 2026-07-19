@@ -142,12 +142,21 @@ class OpenAICompatClient:
         headers = {}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        body = {"model": self.model,
+                "messages": [{"role": "system", "content": system},
+                             {"role": "user", "content": user}]}
+        m = self.model.lower()
+        # OpenAI reasoning models (gpt-5.x, o-series) REJECT `max_tokens` and require
+        # `max_completion_tokens`; hidden reasoning also counts against it, so floor
+        # the budget generously or the visible output comes back EMPTY.
+        if "openai.com" in self.base and (m.startswith("gpt-5")
+                                          or bool(__import__("re").match(r"^o[0-9]", m))):
+            body["max_completion_tokens"] = max(max_tokens, 6000)
+        else:
+            body["max_tokens"] = max_tokens
         try:
-            d = _post_json(
-                f"{self.base}/v1/chat/completions", headers,
-                {"model": self.model, "max_tokens": max_tokens,
-                 "messages": [{"role": "system", "content": system},
-                              {"role": "user", "content": user}]}, self.timeout)
+            d = _post_json(f"{self.base}/v1/chat/completions", headers, body,
+                           self.timeout)
             return d["choices"][0]["message"]["content"] or ""
         except Exception:
             return ""
