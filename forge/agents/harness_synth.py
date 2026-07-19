@@ -178,6 +178,19 @@ class HarnessSynthAgent(Agent):
                     if not fixed or fixed == harness:
                         break
                     harness = fixed
+            # Imp.2b: the harness COMPILES but reaches little coverage — instead of
+            # discarding it, ask the LLM to EXPAND it to exercise more of the API
+            # surface (OSS-Fuzz-Gen coverage improvement), then rebuild+probe once.
+            if ok and not live:
+                improved = await self._improve_coverage(harness, src, cov)
+                if improved and improved != harness:
+                    self.think(i, f"harness for {src.name}: expanding to raise coverage")
+                    ok2, live2, cov2, _why2, _lg = await self._build_probe(
+                        improved, src, incs, corpus)
+                    self.em.emit(EventType.HARNESS, source=src.name, built=ok2,
+                                 coverage=cov2, reason="coverage-improved", attempt=99)
+                    if ok2 and live2:
+                        harness, live, cov = improved, live2, cov2
             if not live:
                 self.log(f"no live harness for {src.name} after "
                          f"{self._repairs} repair(s): {why}")
@@ -317,6 +330,34 @@ class HarnessSynthAgent(Agent):
             return ""
         fixed = _extract_c(raw or "")
         return fixed if "LLVMFuzzerTestOneInput" in fixed else ""
+
+    async def _improve_coverage(self, harness: str, src: Path, cov: int) -> str:
+        """Imp.2b — the harness compiles but reaches little coverage. Ask the LLM to
+        EXPAND it to exercise more of the library's untrusted-input API (OSS-Fuzz-Gen
+        coverage improvement). Keeps the anti-artifact rules. Returns "" on failure."""
+        if self.llm is None or not getattr(self.llm, "available", False):
+            return ""
+        system = (
+            "You are a fuzzing engineer. This libFuzzer harness COMPILES but reaches "
+            "very little coverage — it exercises too little of the library. Rewrite it "
+            "to call MORE of the library's untrusted-input API (additional parse/"
+            "decode/read entry points, and follow-up calls that CONSUME the parsed "
+            "result) so the fuzzer reaches deeper code. Keep the exact signature "
+            "`int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)`. Keep the "
+            "anti-artifact rules: fuzz ONLY the input data, valid non-NULL required "
+            "args, correct buffer sizing, no fuzz-as-size/filename. Pure C. Output "
+            "ONLY the C code in a ```c block.")
+        prompt = (
+            f"Current harness (coverage only {cov}):\n```c\n{harness[:2500]}\n```\n"
+            f"Source under test:\n```c\n{_repo.entry_snippet(src)[:1800]}\n```\n"
+            "Rewrite the harness to reach more of the API.")
+        try:
+            raw = await asyncio.to_thread(self.llm.complete, system, prompt,
+                                          max_tokens=1600)
+        except Exception:
+            return ""
+        out = self._strip_bad_includes(_extract_c(raw or ""))
+        return out if "LLVMFuzzerTestOneInput" in out else ""
 
     def _header_for(self, src: Path) -> Optional[Path]:
         stem = src.with_suffix(".h")
