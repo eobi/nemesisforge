@@ -91,6 +91,7 @@ class HarnessSynthAgent(Agent):
                  focus_function: str = "", guard_context: str = "",
                  dict_tokens: Optional[list] = None, repairs: int = 2,
                  campaign_minutes: int = 0, symbolic: bool = False,
+                 format_hints=None,
                  sanitizer: str = "address", corpus_tag: str = "h") -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.repo = repo or getattr(ctx, "repo", None)
@@ -114,6 +115,7 @@ class HarnessSynthAgent(Agent):
         self.focus_note = focus_note
         self.corpus_tag = corpus_tag
         self.symbolic = symbolic          # also run the angr PATH lens per harness
+        self.format_hints = format_hints  # LLM format dict + structured seeds (Imp.1)
 
     async def run(self) -> list[Candidate]:
         if self.llm is None or not getattr(self.llm, "available", False):
@@ -191,6 +193,7 @@ class HarnessSynthAgent(Agent):
                 focus_function=self.focus_function, guard_context=self.guard_context,
                 dict_tokens=self.dict_tokens, sanitizer=self.sanitizer,
                 campaign_minutes=self.campaign_minutes,
+                format_hints=self.format_hints,
                 rounds=rounds, round_time=max(6, self.fuzz_time // rounds))
             # Multi-lens: run the SYMBOLIC (angr) path lens in parallel with the
             # co-driving fuzzer on the SAME harness — it solves guards the fuzzer

@@ -41,6 +41,7 @@ class CoDrivingFuzzAgent(Agent):
                  corpus_dir: Optional[Path] = None, llm=None,
                  focus_function: str = "", guard_context: str = "",
                  dict_tokens: Optional[Sequence[str]] = None,
+                 format_hints=None,
                  sanitizer: str = "address", bug_class: str = "memory_safety",
                  rounds: int = 4, round_time: int = 15, max_len: int = 4096,
                  campaign_minutes: int = 0) -> None:
@@ -53,6 +54,10 @@ class CoDrivingFuzzAgent(Agent):
         self.focus_function = focus_function
         self.guard_context = guard_context
         self.dict_tokens = list(dict_tokens or [])
+        # LLM format-aware inputs (format dictionary + structured seeds) — the
+        # structure blind mutation lacks. Empty when no model / not generated.
+        from .format_seeds import FormatHints
+        self.format_hints = format_hints or FormatHints()
         self.sanitizer = sanitizer
         self.bug_class = bug_class
         self.max_len = max_len
@@ -87,10 +92,18 @@ class CoDrivingFuzzAgent(Agent):
         if seeded:
             self.log(f"seeded corpus with {seeded} repo test input(s)")
 
-        dpath = cscan.write_dict(self.dict_tokens,
-                                 self.corpus_dir.parent / f"{self.name}.dict") \
-            if self.dict_tokens else None
-        seeds: list[bytes] = []
+        # Merge cscan source-literal tokens with the LLM's binary FORMAT tokens into
+        # one libFuzzer dictionary — gives the mutator the format's structure.
+        from . import format_seeds as _fs
+        dpath = _fs.write_dict(self.dict_tokens, self.format_hints.dict_tokens,
+                               self.corpus_dir.parent / f"{self.name}.dict") \
+            if (self.dict_tokens or self.format_hints.dict_tokens) else None
+        # Inject the LLM's structured seeds (valid + bug-class edge cases) so round 0
+        # starts NEAR the deep parsing frontier instead of cold.
+        seeds: list[bytes] = list(self.format_hints.seeds)
+        if seeds:
+            self.log(f"injecting {len(seeds)} LLM structured seed(s) + "
+                     f"{len(self.format_hints.dict_tokens)} format dict token(s)")
         asked: set[bytes] = set()            # LLM seeds already tried (dedup)
         best_cov = -1
 

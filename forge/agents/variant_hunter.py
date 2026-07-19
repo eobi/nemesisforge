@@ -132,6 +132,15 @@ class VariantHunterAgent(Agent):
                          why=nom.get("why", ""))
         targets = targets[:self.max_targets]
 
+        # Imp.1 (structure-aware inputs): generate a format dictionary + structured
+        # seed corpus ONCE per campaign — the format is target-level, so all harnesses
+        # share it. This is the top lever: it gives the fuzzer the valid-but-
+        # pathological structured inputs blind byte-mutation can't build.
+        fh = await self._format_hints(ci, targets)
+        if fh and not fh.empty():
+            self.log(f"format-aware inputs: {len(fh.dict_tokens)} dict token(s), "
+                     f"{len(fh.seeds)} structured seed(s)")
+
         async def _hunt(t, i):
             child = self.child(
                 HarnessSynthAgent, repo=self.repo, llm=self.llm,
@@ -140,7 +149,8 @@ class VariantHunterAgent(Agent):
                 guard_context=t["guard"], dict_tokens=t["dict"],
                 fuzz_time=self.fuzz_time, campaign_minutes=self.campaign_minutes,
                 sanitizer=self.sanitizer, corpus_root=self.corpus_root,
-                symbolic=self.symbolic, corpus_tag=_slug(t["focus"] or i))
+                symbolic=self.symbolic, format_hints=fh,
+                corpus_tag=_slug(t["focus"] or i))
             return await child.execute() or []
 
         sem = asyncio.Semaphore(self.parallel)
@@ -208,6 +218,32 @@ class VariantHunterAgent(Agent):
             if s.name == name:
                 return s
         return self.repo.sources[0] if self.repo.sources else None
+
+    async def _format_hints(self, ci, targets):
+        """LLM format dictionary + structured seeds, once per campaign (Imp.1)."""
+        from .format_seeds import generate, FormatHints
+        if self.llm is None or not getattr(self.llm, "available", False):
+            return FormatHints()
+        header = ""
+        for h in (getattr(self.repo, "headers", None) or []):
+            try:
+                header = Path(h).read_text(errors="replace")[:3000]
+                break
+            except Exception:
+                continue
+        top = targets[0] if targets else {}
+        entry = ""
+        if top.get("src"):
+            try:
+                entry = _repo.entry_snippet(top["src"])
+            except Exception:
+                entry = ""
+        try:
+            return await generate(self.llm, library=getattr(self.repo, "url", ""),
+                                  header=header, entry=entry,
+                                  guard=top.get("guard", ""), bug_class="memory_safety")
+        except Exception:
+            return FormatHints()
 
     async def _fallback(self, srcs) -> list[Candidate]:
         """No sinks found (unusual) — fall back to plain harness synth."""
