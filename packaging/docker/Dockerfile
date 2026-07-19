@@ -9,12 +9,15 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      clang lld llvm \
+      clang lld llvm libclang-rt-18-dev \
       cmake make autoconf automake libtool pkg-config \
       build-essential git ca-certificates \
       python3 python3-pip python3-venv \
       libssl-dev zlib1g-dev \
  && rm -rf /var/lib/apt/lists/*
+# libclang-rt-18-dev is REQUIRED: the base clang package ships the compiler but
+# NOT the compiler-rt runtime (libclang_rt.fuzzer/asan), so -fsanitize=fuzzer,address
+# fails to link and every hunt would be hollow. This provides those runtime archives.
 
 # libFuzzer-capable clang is /usr/bin/clang on Linux (no Homebrew LLVM needed).
 ENV FORGE_CLANG=/usr/bin/clang
