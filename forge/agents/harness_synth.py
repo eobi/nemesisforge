@@ -141,6 +141,16 @@ class HarnessSynthAgent(Agent):
                 if ok:
                     break
                 if attempt < self._repairs:
+                    # Deterministic first: drop any include the compiler couldn't
+                    # find (hallucinated, or a real-but-wrong-platform header like
+                    # minmea's ti-rtos compat). Cheaper + more reliable than an LLM
+                    # round, and it doesn't cost a model call.
+                    stripped = _drop_missing_includes(harness, log)
+                    if stripped != harness:
+                        self.think(i, f"harness for {src.name}: dropping unresolved "
+                                      f"include(s), rebuilding")
+                        harness = stripped
+                        continue
                     self.think(i, f"harness for {src.name} didn't compile — "
                                   f"repairing (round {attempt + 1})")
                     fixed = await self._repair(harness, log)
@@ -300,3 +310,21 @@ class HarnessSynthAgent(Agent):
 def _extract_c(text: str) -> str:
     m = re.search(r"```(?:c|cpp|c\+\+)?\s*(.*?)```", text, re.S)
     return (m.group(1) if m else text).strip()
+
+
+def _drop_missing_includes(harness: str, log: str) -> str:
+    """Remove #include lines for headers the compiler reported as not found, using
+    the build log's `'foo.h' file not found` diagnostics. Handles hallucinated
+    includes AND real-but-unreachable platform headers (minmea's ti-rtos compat).
+    Returns the harness unchanged if there is nothing to drop."""
+    missing = set(re.findall(r"['\"]([^'\"]+\.h)['\"] file not found", log or ""))
+    if not missing:
+        return harness
+    bases = {m.split("/")[-1] for m in missing}
+    out = []
+    for line in harness.splitlines():
+        m = re.match(r'\s*#\s*include\s*[<"]([^>"]+)[>"]', line)
+        if m and m.group(1).split("/")[-1] in bases:
+            continue
+        out.append(line)
+    return "\n".join(out)
