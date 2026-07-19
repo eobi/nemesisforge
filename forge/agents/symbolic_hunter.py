@@ -39,11 +39,12 @@ class SymbolicHunterAgent(Agent):
                  include_dirs: Optional[Sequence[Path]] = None,
                  sanitizer: str = "address", bug_class: str = "memory_safety",
                  max_seconds: int = 90, max_steps: int = 3000,
-                 input_len: int = 64) -> None:
+                 input_len: int = 64, corpus_dir=None) -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.harness = harness
         self.target_sources = list(target_sources or [])
         self.include_dirs = list(include_dirs or [])
+        self.corpus_dir = corpus_dir      # Imp.4b: also feed solved inputs to the fuzzer
         self.sanitizer = sanitizer
         self.bug_class = bug_class
         self.max_seconds = max_seconds
@@ -69,6 +70,23 @@ class SymbolicHunterAgent(Agent):
             self.log("symbolic-hunter build failed", log=(build.log or "")[-200:])
             return []
         inputs = await asyncio.to_thread(self._explore, str(build.binary))
+        # Imp.4b: the inputs angr solved reach deep, guard-passed states — feed them
+        # into the SHARED corpus so the co-driving fuzzer (running in parallel) mutates
+        # onward from them, not just hand them to the oracle. libFuzzer re-reads the
+        # corpus dir each round, so it picks these up mid-campaign.
+        if self.corpus_dir and inputs:
+            import hashlib
+            from pathlib import Path
+            cdir = Path(self.corpus_dir)
+            try:
+                cdir.mkdir(parents=True, exist_ok=True)
+                for inp in inputs:
+                    dest = cdir / f"sym_{hashlib.sha1(inp).hexdigest()[:16]}"
+                    if not dest.exists():
+                        dest.write_bytes(inp)
+                self.log(f"seeded {len(inputs)} symbolic-reached input(s) into the corpus")
+            except Exception:
+                pass
         cands = []
         for i, inp in enumerate(inputs):
             self.em.emit(EventType.CANDIDATE, title=f"symbolic reach #{i}",

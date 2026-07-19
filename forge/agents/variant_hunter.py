@@ -130,6 +130,11 @@ class VariantHunterAgent(Agent):
             self.em.emit(EventType.CANDIDATE, title=f"suspect: {fn or '?'}",
                          bug_class="memory_safety", agent=self.name,
                          why=nom.get("why", ""))
+        # Imp.4a: direct the fuzzer at the SOURCE static analyzer's suspects too, not
+        # only cscan sinks — map any static_leads.json warning (file:line) to its
+        # enclosing function and add it as a target (best-effort; present on
+        # persistent/resumed campaigns where the static lens has already run).
+        self._merge_static_leads(ci, targets, seen)
         targets = targets[:self.max_targets]
 
         # Imp.1 (structure-aware inputs): generate a format dictionary + structured
@@ -218,6 +223,47 @@ class VariantHunterAgent(Agent):
             if s.name == name:
                 return s
         return self.repo.sources[0] if self.repo.sources else None
+
+    def _merge_static_leads(self, ci, targets, seen) -> None:
+        """Imp.4a — add the static analyzer's flagged functions as fuzz targets.
+        Reads static_leads.json (if present) and maps each file:line to the enclosing
+        cscan function so the co-driving fuzzer is directed there too."""
+        import json
+        path = self.ctx.artifacts / "static_leads.json"
+        if not path.exists():
+            return
+        try:
+            leads = json.loads(path.read_text())
+        except Exception:
+            return
+        # index functions by basename → list of (start, end, name)
+        by_file: dict[str, list] = {}
+        for name, fn in ci.funcs.items():
+            base = Path(getattr(fn, "file", "") or "").name
+            by_file.setdefault(base, []).append((fn.start, fn.end, name))
+        added = 0
+        for ld in leads:
+            if added >= 4:                       # cap: don't drown cscan nominations
+                break
+            base = Path(ld.get("file", "")).name
+            line = int(ld.get("line", 0) or 0)
+            fn = next((n for s, e, n in by_file.get(base, []) if s <= line <= e), "")
+            if not fn:
+                continue
+            src = ci.funcs[fn].file
+            key = (str(src), fn)
+            if not src or key in seen:
+                continue
+            seen.add(key)
+            guard = cscan.func_body(ci, fn)
+            targets.append({
+                "src": Path(src), "focus": fn,
+                "note": f"reach {fn}() — static-analyzer suspect ({ld.get('kind','')})",
+                "guard": guard, "dict": cscan.guard_tokens(guard) if guard else []})
+            added += 1
+        if added:
+            self.log(f"orchestration: added {added} static-analyzer suspect(s) as "
+                     f"fuzz target(s)")
 
     async def _format_hints(self, ci, targets):
         """LLM format dictionary + structured seeds, once per campaign (Imp.1)."""

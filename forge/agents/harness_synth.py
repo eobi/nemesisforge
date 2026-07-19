@@ -224,6 +224,7 @@ class HarnessSynthAgent(Agent):
                     SymbolicHunterAgent, harness=harness,
                     target_sources=self.lib_sources or [src],
                     include_dirs=incs, sanitizer=self.sanitizer,
+                    corpus_dir=corpus,       # Imp.4b: symbolic inputs → fuzzer corpus
                     max_seconds=sym_budget)
                 tasks.append(sym.execute())
             for res in await asyncio.gather(*tasks):
