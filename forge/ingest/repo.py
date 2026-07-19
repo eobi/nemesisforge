@@ -38,7 +38,7 @@ _SKIP_DIRS = {"test", "tests", "testing", "example", "examples", "demo", "demos"
 # We only drop dirs that hold non-library code (tests/examples/benchmarks/docs/build).
 _NONLIB_DIRS = {"test", "tests", "testing", "example", "examples", "demo", "demos",
                 "bench", "benchmark", "benchmarks", "fuzz", "fuzzing", "doc", "docs",
-                ".git", "build"}
+                ".git", "build", "tutorial", "tutorials"}
 
 _SRC_EXT = {".c", ".cc", ".cpp", ".cxx"}
 # Function-name signals that a source parses / decodes untrusted input.
@@ -258,13 +258,39 @@ def patch_diff(root: Path, commit: str, *, timeout: int = 60,
         return ""
 
 
+# A function DEFINITION opening (not a call, not a prototype): a line starting at
+# column 0 (not indented, so not a nested/block statement), not `static`, with a
+# `name(` and no trailing `;`. Heuristic but good enough to spot duplicate symbols.
+_FUNC_DEF = re.compile(
+    r"^(?!static\b)(?!typedef\b)(?:[A-Za-z_][\w\*]*[ \t\*]+)+([A-Za-z_]\w*)\s*\(",
+    re.MULTILINE,
+)
+_NOT_A_FUNC = {"if", "for", "while", "switch", "return", "sizeof", "do", "else",
+               "case", "goto"}
+
+
+def _defined_symbols(text: str) -> set[str]:
+    """Non-static function names a translation unit DEFINES (would export at link).
+    A column-0 `<rettype> name(` opening — calls are indented inside bodies, so a
+    return-type prefix at the margin reliably marks a definition (or prototype)."""
+    return {m.group(1) for m in _FUNC_DEF.finditer(text)} - _NOT_A_FUNC
+
+
 def library_sources(root: Path, *, limit: int = 250) -> list[Path]:
     """ALL of a library's own .c/.cc files (so a harness against a MULTI-file
     library LINKS — mpack/canboat/ISOBMFF, not just single-file cJSON/amalgamations).
     Excludes test/example/fuzz dirs and any file with its own main() (which would
     clash with libFuzzer's main) — but KEEPS vendored deps/, which must be linked
-    or the harness fails with undefined symbols (librdb's deps/redis, etc.)."""
+    or the harness fails with undefined symbols (librdb's deps/redis, etc.).
+
+    Amalgamation guard: many popular libs ship BOTH a single-file amalgamation
+    (`mongoose.c`, `sqlite3.c`) AND the same code split under `src/`. Linking both
+    is a duplicate-symbol failure (0 binaries). We skip any file whose defined
+    symbols are ENTIRELY already provided by earlier-kept files — a fully-subsumed
+    half can only cause link clashes, never add unique code. Root-level amalgamations
+    sort before `src/…`, so the amalgamation is kept and the split copy is dropped."""
     out: list[Path] = []
+    seen_syms: set[str] = set()
     for p in sorted(root.rglob("*")):
         if p.suffix.lower() not in _SRC_EXT:
             continue
@@ -277,6 +303,10 @@ def library_sources(root: Path, *, limit: int = 250) -> list[Path]:
             continue
         if re.search(r"\bint\s+main\s*\(", text):      # would clash with libFuzzer
             continue
+        syms = _defined_symbols(text)
+        if syms and syms <= seen_syms:                 # fully-duplicate (amalgamation half)
+            continue
+        seen_syms |= syms
         out.append(p)
         if len(out) >= limit:
             break
