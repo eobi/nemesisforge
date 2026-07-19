@@ -106,6 +106,7 @@ class CoDrivingFuzzAgent(Agent):
                      f"{len(self.format_hints.dict_tokens)} format dict token(s)")
         asked: set[bytes] = set()            # LLM seeds already tried (dedup)
         best_cov = -1
+        regen = 0                            # coverage-feedback regenerations (bounded)
 
         for i in range(self.rounds):
             if self.ctx.budget.expired():
@@ -141,24 +142,41 @@ class CoDrivingFuzzAgent(Agent):
                               f"{fr.coverage}, focus={self.focus_function or 'none'} "
                               f"→ {crash.bug_type}")]
 
+            improved = fr.coverage > best_cov
             best_cov = max(best_cov, fr.coverage)
             # No crash: the guard hasn't been passed. Ask the reasoning tier for an
             # input that satisfies it, so the next round mutates from past the gate.
             if self.llm is None or not getattr(self.llm, "available", False):
                 self.think(i, f"cov={fr.coverage}, no model to unlock the guard")
                 continue                     # blind fuzzing only; keep trying
+            batch: list[bytes] = []
+            # Imp.1c: on a coverage PLATEAU, ask the LLM for STRUCTURED inputs that
+            # reach format paths the fuzzer hasn't (OSS-Fuzz-Gen coverage feedback).
+            # Bounded regenerations so a stuck target can't burn the budget on tokens.
+            if not improved and regen < 2:
+                fresh = [s for s in await self._coverage_seeds(fr)
+                         if s and s not in asked]
+                if fresh:
+                    regen += 1
+                    asked.update(fresh)
+                    batch.extend(fresh)
+                    self.em.emit(EventType.SEED, title="coverage-gap structured seeds",
+                                 rationale=f"plateau cov={fr.coverage} → "
+                                           f"{len(fresh)} new structured input(s)")
             self.think(i, f"cov={fr.coverage}, no crash — asking the LLM for an "
                           f"input that satisfies the guard")
             seed = await self._craft_seed(fr, best_cov)
             if seed and seed not in asked:
                 asked.add(seed)
-                seeds = [seed]
+                batch.append(seed)
                 # A guard-passing SEED is corpus fuel to reach deeper — NOT an
                 # exploit. Emit SEED, not POC_WRITTEN, so crash/PoC counts (and the
                 # monitor) never false-positive on co-driving seeds.
                 self.em.emit(EventType.SEED, title="guard-passing seed",
                              rationale=f"reach {self.focus_function or 'sink'} "
                                        f"(round {i}, {len(seed)} bytes)")
+            if batch:
+                seeds = batch
 
         self.log(f"co-driving loop ended without a crash (best cov={best_cov})")
         return []
@@ -184,6 +202,32 @@ class CoDrivingFuzzAgent(Agent):
             except Exception:
                 continue
         return n
+
+    async def _coverage_seeds(self, fr) -> list[bytes]:
+        """Imp.1c — on a coverage plateau, ask the LLM for a few STRUCTURED inputs
+        that exercise format paths the fuzzer hasn't reached (different type tags,
+        nesting, field sizes) plus a couple of bug-class edge cases. Returns decoded
+        raw-byte seeds (validated); empty on any failure."""
+        system = (
+            "You are a fuzzing expert. A coverage-guided fuzzer has PLATEAUED on this "
+            "parser. Produce 3-6 NEW, structurally-different valid inputs for this "
+            "format that likely reach code paths the fuzzer hasn't (vary type tags, "
+            "nesting depth, field sizes, optional features), plus 1-2 edge cases "
+            "(declared length larger than the bytes present, truncation, zero-length). "
+            'Reply ONLY JSON: {"seeds_b64":["<base64 raw bytes>", ...]}.')
+        prompt = (
+            f"Harness:\n```c\n{self.harness[:1400]}\n```\n"
+            f"Target/parse function:\n```c\n{self.guard_context[:1600]}\n```\n"
+            f"The fuzzer plateaued at cov={fr.coverage}. Give diverse structured "
+            f"inputs to reach new code.")
+        try:
+            parsed, _ = await asyncio.to_thread(self.llm.complete_json, system, prompt)
+        except Exception:
+            parsed = None
+        if not isinstance(parsed, dict):
+            return []
+        from .format_seeds import _decode
+        return _decode(parsed.get("seeds_b64"), 8, max_len=self.max_len * 8)
 
     async def _craft_seed(self, fr, best_cov: int) -> Optional[bytes]:
         system = (
