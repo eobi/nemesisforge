@@ -38,7 +38,7 @@ def _factory(url: str, seed, minutes: int):
             jid, url, artifacts_root=Path.cwd() / "runs", max_targets=4,
             fuzz_time=120, campaign_minutes=minutes, sanitizer="address,undefined",
             seed_patch=seed.pattern, use_build_system=True, use_symbolic=False,
-            provider="anthropic", model="claude-opus-4-8")
+            provider=__import__("os").environ.get("FORGE_PROVIDER","openai"), model=__import__("os").environ.get("FORGE_MODEL","gpt-5.1"))
         return ctx, discovery, oracles, escalation
     return make
 

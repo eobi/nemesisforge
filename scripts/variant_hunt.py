@@ -48,7 +48,7 @@ async def main():
         jid, url, artifacts_root=root, max_targets=5, fuzz_time=120,
         campaign_minutes=mins, sanitizer="address,undefined", seed_patch=CWPACK_SEED,
         use_build_system=True, use_symbolic=False,
-        provider="anthropic", model="claude-opus-4-8")
+        provider=__import__("os").environ.get("FORGE_PROVIDER","openai"), model=__import__("os").environ.get("FORGE_MODEL","gpt-5.1"))
     print(f"[{time.strftime('%H:%M:%S')}] {name} link="
           f"{'obj:'+str(len(ctx.target.extra_link_objects)) if ctx.target.extra_link_objects else 'file-by-file'} "
           f"libs={len(ctx.repo.library or [])}", flush=True)

@@ -24,7 +24,7 @@ async def main():
     ctx, discovery, oracles, escalation, llm = repo_job(
         jid, url, artifacts_root=root, max_targets=targets, fuzz_time=120,
         campaign_minutes=mins, sanitizer=san, use_build_system=True,
-        use_symbolic=symbolic, provider="anthropic", model="claude-opus-4-8")
+        use_symbolic=symbolic, provider=__import__("os").environ.get("FORGE_PROVIDER","openai"), model=__import__("os").environ.get("FORGE_MODEL","gpt-5.1"))
     print(f"[{time.strftime('%H:%M:%S')}] {name} link="
           f"{'obj:'+str(len(ctx.target.extra_link_objects)) if ctx.target.extra_link_objects else 'file-by-file'} "
           f"libs={len(ctx.repo.library or [])} seeds={len(ctx.seed_files or [])}", flush=True)
