@@ -10,6 +10,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       clang lld llvm libclang-rt-18-dev \
+      perl python3-dev libtool-bin \
       cmake make autoconf automake libtool pkg-config \
       build-essential git ca-certificates \
       python3 python3-pip python3-venv \

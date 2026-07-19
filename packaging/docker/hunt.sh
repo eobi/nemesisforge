@@ -27,9 +27,9 @@ async def main():
           f"(job={jid}, {mins}min, {targets} targets, san={san})", flush=True)
     ctx, discovery, oracles, escalation, llm = repo_job(
         jid, url, artifacts_root=root, max_targets=targets, fuzz_time=120,
-        campaign_minutes=mins, sanitizer=san,
+        campaign_minutes=mins, sanitizer=os.environ.get("FORGE_SAN", san),
         use_build_system=True, use_symbolic=(os.environ.get("FORGE_SYMBOLIC")=="1"),
-        provider="anthropic", model="claude-opus-4-8")
+        provider=os.environ.get("FORGE_PROVIDER","openai"), model=os.environ.get("FORGE_MODEL","gpt-5.1"))
     bs = ctx.build_system
     print(f"[{time.strftime('%H:%M:%S')}] build_system={bs} "
           f"link={'objects:'+str(len(ctx.target.extra_link_objects)) if ctx.target.extra_link_objects else 'file-by-file'} "
