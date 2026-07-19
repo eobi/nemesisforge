@@ -18,6 +18,18 @@ class _MockLLM:
         return ({"verdict": self._v, "category": "test", "reason": "mock"}, {})
 
 
+class _SeqLLM:
+    """Returns a scripted sequence of verdicts across the panel's lens calls."""
+    available = True
+
+    def __init__(self, verdicts):
+        self._q = list(verdicts)
+
+    def complete_json(self, system, prompt):
+        v = self._q.pop(0) if self._q else "real"
+        return ({"verdict": v, "category": "test", "reason": "mock"}, {})
+
+
 def _finding(alloc_file):
     return SimpleNamespace(
         novelty="candidate",
@@ -52,6 +64,23 @@ def test_real_is_kept():
     asyncio.run(misuse_triage.review(ctx, [f], _MockLLM("real")))
     assert f.novelty == "candidate"                   # untouched
     assert f.artifacts["misuse_review"]["verdict"] == "real"
+
+
+def test_single_dissent_cannot_flip_real():
+    # panel votes real/real/artifact → majority real → NOT de-rated
+    ctx, _ = _ctx()
+    f = _finding("lib.c")
+    asyncio.run(misuse_triage.review(ctx, [f], _SeqLLM(["real", "real", "artifact"])))
+    assert f.novelty == "candidate"                   # one skeptic can't sink it
+    assert f.artifacts["misuse_review"]["verdict"] == "real"
+
+
+def test_majority_artifact_derates():
+    # panel votes artifact/artifact/real → majority artifact → de-rated
+    ctx, _ = _ctx()
+    f = _finding("forge_harness.c")
+    asyncio.run(misuse_triage.review(ctx, [f], _SeqLLM(["artifact", "artifact", "real"])))
+    assert f.novelty == "artifact"
 
 
 def test_alloc_in_harness_signal():

@@ -87,7 +87,26 @@ def _lib_snippet(repo, file: str, line: int, span: int = 22) -> str:
     return ""
 
 
-async def _review_one(finding, repo, llm) -> dict:
+# Distinct skeptical LENSES for the multi-vote panel (Refute-or-Promote / OpenAnt):
+# independent reviewers each attack the finding from one angle, so a real bug must
+# survive all of them and one over-eager skeptic can't sink it alone.
+_LENSES = [
+    ("buffer-sizing", "Focus ONLY on buffer sizing/allocation: did the HARNESS "
+     "allocate or size a buffer wrong for the API it called, or reuse one buffer "
+     "across calls with different size needs? If the LIBRARY over-writes a buffer it "
+     "manages, that is a REAL bug."),
+    ("argument-validity", "Focus ONLY on the arguments the harness passed: did it "
+     "pass fuzz bytes as a size/length/count/index/filename, or pass NULL/invalid "
+     "values for REQUIRED parameters, or call APIs in an invalid order? Those are "
+     "harness artifacts. Valid setup feeding untrusted DATA is a real bug."),
+    ("input-reachability", "Focus ONLY on reachability: is the crash reached by "
+     "feeding untrusted INPUT DATA through a documented API with correct setup (real "
+     "bug), or does it require the harness to mis-drive setup/config the attacker "
+     "does not control (artifact)?"),
+]
+
+
+async def _review_one(finding, repo, llm, lens: str = "") -> dict:
     pc = finding.candidate.proposed_check or {}
     harness = pc.get("harness", "")
     cr = (getattr(finding.verdict, "evidence", None) or {}).get("crash", {})
@@ -101,7 +120,8 @@ async def _review_one(finding, repo, llm) -> dict:
         f"CRASH: {cr.get('bug_type','?')} in {func} at {file}:{line}.\n"
         f"Overflowed buffer allocated in: "
         f"{'THE HARNESS' if alloc else ('the library/elsewhere' if alloc is False else 'unknown')}.\n\n"
-        f"HARNESS:\n```c\n{harness[:4000]}\n```\n\n"
+        + (f"REVIEW LENS — {lens}\n\n" if lens else "")
+        + f"HARNESS:\n```c\n{harness[:4000]}\n```\n\n"
         f"LIBRARY SOURCE around the crash ({file}:{line}):\n```c\n{snippet[:2500]}\n```\n\n"
         f"Is this a real library vulnerability or a harness artifact?")
     try:
@@ -126,6 +146,23 @@ async def _review_one(finding, repo, llm) -> dict:
             "alloc_in_harness": alloc}
 
 
+async def _vote(finding, repo, llm) -> dict:
+    """Run the skeptical panel over one finding and return a MAJORITY verdict.
+    Conservative: de-rate to 'artifact' only when a majority of reviewers agree, so a
+    single over-eager skeptic can never sink a real bug."""
+    votes = await asyncio.gather(*[_review_one(finding, repo, llm, lens=desc)
+                                   for _, desc in _LENSES])
+    art = sum(1 for v in votes if v.get("verdict") == "artifact")
+    real = sum(1 for v in votes if v.get("verdict") == "real")
+    verdict = ("artifact" if art > real and art >= 2
+               else "real" if real >= 2 else "unreviewed")
+    reason = next((v.get("reason", "") for v in votes
+                   if v.get("verdict") == verdict), "")
+    return {"verdict": verdict, "reason": reason,
+            "votes": {name: v.get("verdict") for (name, _), v in zip(_LENSES, votes)},
+            "alloc_in_harness": votes[0].get("alloc_in_harness") if votes else None}
+
+
 async def review(ctx, findings, llm) -> None:
     """Annotate each memory-safety candidate with a real/artifact verdict IN PLACE.
     A confident 'artifact' is de-rated (novelty='artifact') so it never reads as a
@@ -140,14 +177,15 @@ async def review(ctx, findings, llm) -> None:
                and getattr(f.candidate, "bug_class", "") == "memory_safety"]
     if not targets:
         return
-    verdicts = await asyncio.gather(*[_review_one(f, repo, llm) for f in targets])
+    verdicts = await asyncio.gather(*[_vote(f, repo, llm) for f in targets])
     for f, v in zip(targets, verdicts):
         f.artifacts["misuse_review"] = v
         if v.get("verdict") == "artifact":
             f.novelty = "artifact"           # de-rate: not a zero-day candidate
             ctx.bus.append(EventType.LOG,
                            text=f"misuse-triage: {f.candidate.title} flagged HARNESS "
-                                f"ARTIFACT — {v.get('reason','')[:160]}")
+                                f"ARTIFACT (panel {v.get('votes')}) — "
+                                f"{v.get('reason','')[:140]}")
         elif v.get("verdict") == "real":
             ctx.bus.append(EventType.LOG,
                            text=f"misuse-triage: {f.candidate.title} confirmed "
