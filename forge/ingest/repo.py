@@ -75,9 +75,9 @@ def clone(url: str, dest: Path, *, ref: Optional[str] = None,
         shutil.copytree(local, dest, ignore=shutil.ignore_patterns(".git"))
         info = RepoInfo(root=dest, url=str(local), ref="local")
         info.build_system = detect_build_system(dest)
-        info.sources = rank_sources(dest)
+        materialize_single_header_impls(dest)   # BEFORE ranking: header-only libs
+        info.sources = rank_sources(dest)       # (stb/dr_libs/cgltf) expose fns here
         info.headers = _find(dest, {".h", ".hpp"}, limit=200)
-        materialize_single_header_impls(dest)   # stb/dr_libs/cgltf: make impl linkable
         info.library = library_sources(dest)
         return info
 
@@ -95,9 +95,9 @@ def clone(url: str, dest: Path, *, ref: Optional[str] = None,
                           capture_output=True, text=True)
     info = RepoInfo(root=dest, url=url, ref=(ref or head.stdout.strip()[:12]))
     info.build_system = detect_build_system(dest)
-    info.sources = rank_sources(dest)
+    materialize_single_header_impls(dest)       # BEFORE ranking: header-only libs
+    info.sources = rank_sources(dest)           # (stb/dr_libs/cgltf) expose fns here
     info.headers = _find(dest, {".h", ".hpp"}, limit=200)
-    materialize_single_header_impls(dest)       # stb/dr_libs/cgltf: make impl linkable
     info.library = library_sources(dest)
     return info
 
