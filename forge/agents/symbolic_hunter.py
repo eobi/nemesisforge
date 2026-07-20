@@ -110,39 +110,29 @@ class SymbolicHunterAgent(Agent):
 
     def _explore(self, binary: str) -> list[bytes]:
         """angr: symbolic stdin → explore for unconstrained (attacker-controlled)
-        states, return concretized inputs. Bounded; best-effort."""
-        import time
+        states, return concretized inputs. Runs in an ISOLATED subprocess: angr can
+        SIGSEGV / hit a Z3 assertion on a real pointer-heavy parser, and a native crash
+        in an in-process thread is uncatchable and would take the whole hunt down. The
+        subprocess contains it — a crash/timeout just yields no symbolic inputs and the
+        co-driving fuzzer runs on. Best-effort."""
+        import base64
+        import json
+        import subprocess
+        import sys
+        payload = json.dumps({"binary": binary, "input_len": self.input_len,
+                              "max_steps": self.max_steps,
+                              "max_seconds": self.max_seconds})
         try:
-            import angr
-            import claripy
+            r = subprocess.run(
+                [sys.executable, "-m", "forge.agents._symbolic_explore"],
+                input=payload, capture_output=True, text=True,
+                timeout=self.max_seconds + 30)
+        except Exception:
+            return []                         # timeout / launch failure → no inputs
+        if r.returncode != 0:                 # SIGSEGV / Z3 assert → contained
+            return []
+        try:
+            out = json.loads((r.stdout or "").strip().splitlines()[-1])
+            return [base64.b64decode(s) for s in out] if isinstance(out, list) else []
         except Exception:
             return []
-        found: list[bytes] = []
-        try:
-            proj = angr.Project(binary, auto_load_libs=False)
-            n = self.input_len
-            sym = claripy.BVS("stdin", n * 8)
-            state = proj.factory.full_init_state(
-                stdin=angr.SimFileStream(name="stdin", content=sym, has_end=True),
-                add_options={angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
-                             angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS})
-            simgr = proj.factory.simulation_manager(state, save_unconstrained=True)
-            start = time.monotonic()
-            steps = 0
-            while (simgr.active and steps < self.max_steps
-                   and time.monotonic() - start < self.max_seconds):
-                simgr.step()
-                steps += 1
-                for st in list(simgr.unconstrained):
-                    try:
-                        val = st.solver.eval(sym, cast_to=bytes)
-                        if val and val not in found:
-                            found.append(val)
-                    except Exception:
-                        pass
-                    simgr.unconstrained.remove(st)
-                if len(found) >= 3:
-                    break
-        except Exception:
-            return found
-        return found

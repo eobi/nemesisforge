@@ -159,62 +159,77 @@ def is_strict_relaxation(sink_constraints: list, pred_condition: str, env: dict,
 
 
 # ── angr exploration to produce the sink constraint C (Docker/Linux) ─────────
+# CRITICAL: angr symbolically executing a real pointer-heavy parser can SIGSEGV in its
+# native components (pyvex/z3/unicorn) — an uncatchable crash that would take the whole
+# hunt down. So the exploration runs in an ISOLATED subprocess with a timeout: a
+# segfault or hang there is contained (non-zero exit → we return [] → undirected
+# fuzzing). We never let the proof crash the fuzzer.
+
 async def prove_strict_relaxation(predicates, *, target, harness: str, include_dirs,
                                   target_sources=None, sanitizer: str = "address",
                                   max_seconds: int = 120):
     """For each predicate, symbolically reach its function's sink with symbolic scalar
     params, extract the sink-reaching path constraint C, and keep the predicate only if
     C ⟹ P. Returns the validated sublist (validated=True). Fail-safe: returns [] on any
-    error, so nothing gets instrumented that wasn't proven.
-
-    NOTE: end-to-end this requires a working angr on the built binary (Docker/Linux);
-    it is intentionally conservative and returns [] rather than guess when exploration
-    is incomplete."""
+    error/crash/timeout, so nothing gets instrumented that wasn't proven."""
     import asyncio
-
-    def _work():
-        try:
-            import angr  # noqa: F401
-        except Exception:
-            return []
-        validated = []
-        try:
-            build = target.build(harness, libfuzzer_driver=True,
-                                  target_sources=target_sources,
-                                  include_dirs=include_dirs, sanitizer=sanitizer)
-            if not getattr(build, "ok", False):
-                return []
-            import angr
-            proj = angr.Project(build.binary, auto_load_libs=False)
-            for p in predicates:
-                try:
-                    if _prove_one(proj, p):
-                        p.validated = True
-                        validated.append(p)
-                except Exception:
-                    continue          # unprovable → leave unvalidated (safe)
-        except Exception:
-            return []
-        return validated
-
     try:
-        return await asyncio.wait_for(asyncio.to_thread(_work), timeout=max_seconds + 30)
+        import angr  # noqa: F401
+    except Exception:
+        return []
+    build = await asyncio.to_thread(
+        target.build, harness, libfuzzer_driver=True,
+        target_sources=target_sources, include_dirs=include_dirs, sanitizer=sanitizer)
+    if not getattr(build, "ok", False):
+        return []
+    specs = [(i, p.function, p.condition) for i, p in enumerate(predicates)]
+    ok_idx = await asyncio.to_thread(
+        _run_isolated, str(build.binary), specs, max_seconds)
+    validated = []
+    for i in ok_idx:
+        if 0 <= i < len(predicates):
+            predicates[i].validated = True
+            validated.append(predicates[i])
+    return validated
+
+
+def _run_isolated(binary_path: str, specs, timeout: int) -> list:
+    """Run the angr proof in a real, throwaway SUBPROCESS (`python -m
+    forge.agents._predicate_prove`); return the indices of predicates that proved
+    strict-relaxation. A segfault / Z3 assertion / hang in the child is fully contained
+    — non-zero exit or timeout → [] → undirected fuzzing. A real subprocess (not
+    multiprocessing) is required because the hunt entry point may be a stdin script,
+    which breaks spawn/fork re-import."""
+    import json
+    import subprocess
+    import sys
+    payload = json.dumps({"binary": binary_path, "specs": specs})
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "forge.agents._predicate_prove"],
+            input=payload, capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return []                             # timeout / launch failure → nothing proven
+    if r.returncode != 0:                     # crashed (SIGSEGV / Z3 assert) → contained
+        return []
+    try:
+        out = json.loads((r.stdout or "").strip().splitlines()[-1])
+        return [int(i) for i in out] if isinstance(out, list) else []
     except Exception:
         return []
 
 
-def _prove_one(proj, pred) -> bool:
-    """Reach `pred.function`'s sink with symbolic scalar args and check C ⟹ P.
-    Returns False whenever the sink can't be reached / the predicate can't be proven
-    (conservative). Uses a call_state at the function so predicate params map directly
-    to the symbolic arguments."""
+def _prove_one(proj, function: str, condition: str) -> bool:
+    """Reach `function`'s sink with symbolic scalar args and check C ⟹ P. Returns False
+    whenever the sink can't be reached / the predicate can't be proven (conservative).
+    Pointer params are kept symbolic-but-tightly-bounded to curb angr's unconstrained-
+    memory explosion; a call_state maps predicate params to the symbolic arguments."""
     import angr  # noqa: F401
-    sym = proj.loader.find_symbol(pred.function)
+    sym = proj.loader.find_symbol(function)
     if sym is None:
         return False
-    # symbolic scalar args, one per parameter name the predicate references
     env, args = {}, []
-    for name in re.findall(r"[A-Za-z_]\w*", pred.condition):
+    for name in re.findall(r"[A-Za-z_]\w*", condition):
         if name not in env and name.isidentifier():
             bv = claripy.BVS(name, proj.arch.bits)
             env[name] = claripy.Extract(31, 0, bv) if proj.arch.bits > 32 else bv
@@ -222,14 +237,15 @@ def _prove_one(proj, pred) -> bool:
     if not env:
         return False
     state = proj.factory.call_state(sym.rebased_addr, *args)
+    # cap the exploration hard: deep pointer-heavy parsers explode, and we only need a
+    # handful of sink-reaching terminal states to test the implication.
     simgr = proj.factory.simulation_manager(state)
-    simgr.explore(n=64)                     # bounded; deep sinks need Docker budget
-    reaching = simgr.deadended + simgr.active
+    simgr.explore(n=24)                      # hard step cap; explosion is contained
+    reaching = (simgr.deadended + simgr.active)[:16]
     if not reaching:
         return False
-    # every explored terminal state's constraint must imply P
     for st in reaching:
-        if not is_strict_relaxation(list(st.solver.constraints), pred.condition, env,
+        if not is_strict_relaxation(list(st.solver.constraints), condition, env,
                                     solver=st.solver):
             return False
     return True

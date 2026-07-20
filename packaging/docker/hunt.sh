@@ -29,6 +29,8 @@ async def main():
         jid, url, artifacts_root=root, max_targets=targets, fuzz_time=120,
         campaign_minutes=mins, sanitizer=os.environ.get("FORGE_SAN", san),
         use_build_system=True, use_symbolic=(os.environ.get("FORGE_SYMBOLIC")=="1"),
+        ensemble=(os.environ.get("FORGE_ENSEMBLE")=="1"),
+        patch=(os.environ.get("FORGE_PATCH")=="1"),
         provider=os.environ.get("FORGE_PROVIDER","openai"), model=os.environ.get("FORGE_MODEL","gpt-5.1"))
     bs = ctx.build_system
     print(f"[{time.strftime('%H:%M:%S')}] build_system={bs} "
