@@ -332,9 +332,14 @@ def materialize_single_header_impls(root: Path) -> list[Path]:
     that defines the macro. Returns the synthesized files."""
     root = Path(root)
     made: list[Path] = []
-    # macros already defined by a real .c (avoid double-compiling the implementation)
+    # macros already defined by a LINKABLE .c (avoid double-compiling the impl).
+    # Only library .c count — a test/example that #defines the macro (dr_libs does
+    # this in tests/) is EXCLUDED from library_sources, so its definition never
+    # links; treating it as "already backed" would wrongly skip the real impl TU.
     defined_in_c: set[str] = set()
     for c in root.rglob("*.c"):
+        if {part.lower() for part in c.relative_to(root).parts[:-1]} & _NONLIB_DIRS:
+            continue
         try:
             for m in re.finditer(r"^\s*#\s*define\s+([A-Z][A-Z0-9_]*_IMPLEMENTATION)\b",
                                   c.read_text(errors="replace"), re.MULTILINE):
