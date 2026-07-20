@@ -362,8 +362,13 @@ def materialize_single_header_impls(root: Path) -> list[Path]:
         if impl.exists():
             made.append(impl)
             continue
-        rel = h.relative_to(root).as_posix()
-        body = "".join(f"#define {m}\n" for m in macros) + f'#include "{rel}"\n'
+        # Inline the header TEXT (not #include) so the reasoning tier can SEE the
+        # function definitions inside `#ifdef ..._IMPLEMENTATION` (cscan scans text,
+        # it doesn't evaluate the preprocessor) — otherwise the impl links but
+        # target discovery finds nothing to fuzz. The impl .c sits beside the header
+        # so any relative #includes still resolve; the harness includes the .h
+        # normally and links against this TU.
+        body = "".join(f"#define {m}\n" for m in macros) + text
         try:
             impl.write_text(body)
             made.append(impl)
