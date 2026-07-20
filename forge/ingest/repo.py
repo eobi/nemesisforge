@@ -296,6 +296,12 @@ def library_sources(root: Path, *, limit: int = 250) -> list[Path]:
     for p in sorted(root.rglob("*")):
         if p.suffix.lower() not in _SRC_EXT:
             continue
+        # `_forge_impl_*` are discovery-only scaffolds (they let cscan SEE a
+        # single-header lib's functions). The harness for such a lib self-defines
+        # *_IMPLEMENTATION and is self-contained, so linking the scaffold too would
+        # double-define every symbol. Keep it in `sources`, never in link inputs.
+        if p.name.startswith("_forge_impl_"):
+            continue
         parts = {part.lower() for part in p.relative_to(root).parts[:-1]}
         if parts & _NONLIB_DIRS:                       # tests/examples/benches only
             continue
