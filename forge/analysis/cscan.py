@@ -26,7 +26,17 @@ _SINKS: dict[str, tuple[re.Pattern, float]] = {
     "malloc":   (re.compile(r"\b(malloc|calloc|realloc)\s*\("), 1.5),
     "index":    (re.compile(r"\w+\s*\[[^\]]*\b\w+\b[^\]]*\]\s*="), 1.5),  # arr[i]=
     "ptrarith": (re.compile(r"\*\s*\(\s*\w+\s*\+"), 1.0),                  # *(p+..)
+    # Temporal-memory-safety loci (use-after-free / double-free). Detecting the bug
+    # is the fuzzer/oracle's job; the sink marks the manual-lifetime code worth the
+    # DEEPER (symbolic + LLM) budget — K-REPRO's difficulty gradient: spatial OOB is
+    # cheap for plain fuzzing, temporal UAF/double-free is where it needs help.
+    "free":     (re.compile(r"\b(free|kfree|g_free|xfree)\s*\("), 2.5),
+    "realloc_t":(re.compile(r"\brealloc\s*\("), 2.0),                     # frees on move
 }
+
+# Sink kinds whose bugs (UAF/double-free) plain coverage-guided fuzzing under-finds,
+# so the reasoning/symbolic budget is biased toward them.
+_TEMPORAL = frozenset({"free", "realloc_t"})
 
 # Function-name signals for an untrusted-input entry point.
 _ENTRY = re.compile(
@@ -191,8 +201,14 @@ class CodeIntel:
             s.reachable = s.func in reach
             base = _SINKS.get(s.kind, (None, 1.0))[1]
             s.score = base + (2.5 if s.input_influenced else 0) + \
-                (1.5 if s.reachable else 0)
+                (1.5 if s.reachable else 0) + \
+                (2.0 if s.kind in _TEMPORAL else 0)   # K-REPRO: aim budget at temporal
         return sorted(self.sinks, key=lambda s: s.score, reverse=True)[:limit]
+
+    def has_temporal_sink(self, func: str) -> bool:
+        """True if `func` contains a UAF/double-free-class sink — used to bias the
+        symbolic lens toward the targets plain fuzzing under-finds."""
+        return any(s.func == func and s.kind in _TEMPORAL for s in self.sinks)
 
 
 def scan_repo(sources: Iterable[Path]) -> CodeIntel:

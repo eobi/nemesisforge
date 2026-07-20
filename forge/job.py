@@ -71,7 +71,8 @@ async def run_job(ctx: JobContext, *, discovery: list[Callable],
     findings: list[Finding] = []
     try:
         coord = Coordinator(ctx, discovery=discovery, oracles=oracles,
-                            escalation=escalation, llm=llm, harness=harness)
+                            escalation=escalation, llm=llm, harness=harness,
+                            patch=getattr(ctx, "enable_patch", False))
         findings = await coord.execute() or []
         # governance: collapse duplicate bugs, classify novelty vs a persistent
         # known-crash corpus (so only GENUINELY new bugs read as candidates), never
@@ -184,6 +185,7 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
              artifacts_root: Optional[Path] = None, max_targets: int = 3,
              fuzz_time: int = 30, campaign_minutes: int = 0, escalate: bool = True,
              use_build_system: bool = True, use_symbolic: bool = True,
+             ensemble: bool = False, patch: bool = False,
              provider: Optional[str] = None, model: Optional[str] = None,
              api_key: Optional[str] = None, base_url: Optional[str] = None):
     """Point Forge at a real open-source repo by URL: clone → the LLM synthesizes
@@ -202,6 +204,7 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     target = SourceTarget(root / job_id / "work", name=repo_name)
     ctx = JobContext(job_id, target=target, artifacts_root=root)
     ctx.repo = info                                  # for the visibility layer
+    ctx.enable_patch = patch                         # Phase 3B: PoV-gated patcher
     # Phase N: build the repo with its OWN build system (make/cmake/autotools) +
     # our instrumentation, then link every harness against the resulting archive.
     # This is how OSS-Fuzz reaches HARD, multi-file targets a file-by-file compile
@@ -255,6 +258,17 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     from .agents.static_analysis import StaticAnalysisAgent
     discovery = [partial(VariantHunterAgent, repo=info, llm=llm, **vh),
                  partial(StaticAnalysisAgent, repo=info)]
+    if ensemble:
+        # ATLANTIS-style N-version programming: a second, deliberately ORTHOGONAL
+        # strategy so no single blind spot correlates. The primary is conservative
+        # (its configured sanitizer, low false-positive noise); the risky variant
+        # widens the sanitizer set to also flag UB-adjacent corruption that the
+        # address-only run halts on early. run_job's `dedupe` merges overlapping
+        # crashes; each finding is tagged by its agent name ("variant-hunter" vs
+        # "variant-hunter-risky") so we can see which strategy landed it.
+        vh_risky = dict(vh, sanitizer="address,undefined")
+        discovery.insert(1, partial(VariantHunterAgent, repo=info, llm=llm,
+                                    name="variant-hunter-risky", **vh_risky))
     oracles: list[Oracle] = [SanitizerOracle()]
     escalation: list[Oracle] = [ControllabilityOracle()] if escalate else []
     return ctx, discovery, oracles, escalation, llm

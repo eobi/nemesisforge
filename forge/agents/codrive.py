@@ -138,6 +138,7 @@ class CoDrivingFuzzAgent(Agent):
                     target_sources=self.target_sources,
                     include_dirs=self.include_dirs, sanitizer=self.sanitizer,
                     bug_class=self.bug_class, agent=self.name,
+                    coverage=fr.coverage, fuzz_output=fr.output,
                     rationale=f"co-driving loop: round {i} ({how}), cov="
                               f"{fr.coverage}, focus={self.focus_function or 'none'} "
                               f"→ {crash.bug_type}")]

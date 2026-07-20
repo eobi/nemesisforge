@@ -28,6 +28,8 @@ async def main():
         job_id, url, artifacts_root=root, max_targets=max_targets,
         fuzz_time=fuzz_time, campaign_minutes=campaign_minutes,
         sanitizer=os.environ.get("FORGE_SAN", "address"),
+        ensemble=os.environ.get("FORGE_ENSEMBLE") == "1",
+        patch=os.environ.get("FORGE_PATCH") == "1",
         provider=os.environ.get("FORGE_PROVIDER", "openai"),
         model=os.environ.get("FORGE_MODEL", "gpt-5.1"),
     )

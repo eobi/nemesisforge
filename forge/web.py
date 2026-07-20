@@ -198,6 +198,8 @@ class ScanReq(BaseModel):
     seed_commit: str | None = None   # L3: variant-hunt from this repo's fix commit
     seed_patch: str | None = None    # L3: variant-hunt from a supplied patch diff
     sanitizer: str | None = None     # e.g. "address" (only real corruption) vs +undefined
+    ensemble: bool = False           # N-version: add an orthogonal risky strategy
+    patch: bool = False              # PoV-gated patch: prove a fix kills the PoV
 
 
 # Input modes — how you point Forge at an asset.
@@ -296,6 +298,7 @@ async def api_scan(req: ScanReq, user: str = Depends(current_user)) -> dict:
                 seed_patch=req.seed_patch or "", sanitizer=req.sanitizer or None,
                 max_targets=req.max_targets or 3, fuzz_time=req.fuzz_time or 30,
                 campaign_minutes=req.campaign_minutes or 0,
+                ensemble=bool(req.ensemble), patch=bool(req.patch),
                 provider=req.provider, model=req.model, api_key=req.api_key,
                 base_url=req.base_url)
         except Exception as e:

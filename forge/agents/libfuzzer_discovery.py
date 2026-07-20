@@ -97,6 +97,7 @@ class LibFuzzerDiscoveryAgent(Agent):
             inp=inp, crash=crash, harness=self.harness,
             target_sources=self.target_sources, include_dirs=self.include_dirs,
             sanitizer=self.sanitizer, bug_class=self.bug_class, agent=self.name,
+            coverage=fr.coverage, fuzz_output=fr.output,
             rationale=f"coverage-guided fuzzing reached cov={fr.coverage} in "
                       f"{fr.execs:,} execs and found a {len(inp)}-byte input "
                       f"triggering {crash.bug_type}")
@@ -104,9 +105,15 @@ class LibFuzzerDiscoveryAgent(Agent):
 
 def build_candidate(*, inp: bytes, crash, harness: str, target_sources,
                     include_dirs, sanitizer: str, bug_class: str, agent: str,
-                    rationale: str = "") -> Candidate:
+                    rationale: str = "", coverage: int = -1,
+                    fuzz_output: str = "") -> Candidate:
     """Shared: turn a libFuzzer crash into a Candidate the SanitizerOracle can
-    independently rebuild + replay. Used by both the plain and co-driving fuzzers."""
+    independently rebuild + replay. Used by both the plain and co-driving fuzzers.
+
+    `coverage` (edges reached when the crash was found) and `fuzz_output` (the
+    discovery-time fuzzer/sanitizer tail) are carried so the multi-vote triage panel
+    can see the RUNTIME signal, not just the crash text — a real bug reached through
+    deep coverage reads very differently from a shallow harness artifact."""
     top = crash.top
     return Candidate(
         bug_class=bug_class,
@@ -122,6 +129,8 @@ def build_candidate(*, inp: bytes, crash, harness: str, target_sources,
                         "libfuzzer": True,
                         "sanitizer": sanitizer,
                         "target_sources": [str(p) for p in target_sources] or None,
-                        "include_dirs": [str(p) for p in include_dirs] or None},
+                        "include_dirs": [str(p) for p in include_dirs] or None,
+                        "coverage": coverage,
+                        "fuzz_output": (fuzz_output or "")[-1500:] or None},
         crash={"bug_type": crash.bug_type, "stack_hash": crash.stack_hash},
     )

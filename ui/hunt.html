@@ -5,17 +5,60 @@
 <body>
 <div class="wrap">
   <h1 class="page">Hunt — under-fuzzed targets</h1>
-  <div class="sub">Zero-days survive in the long tail that Google's OSS-Fuzz never touched. The scout finds security-relevant C/C++ parsers <b>not already in OSS-Fuzz</b> and ranks them. You authorize a target, then launch a deep campaign against it.</div>
+  <div class="sub">Point the engine at any open-source repo, or let the scout find under-fuzzed parsers. LLM proposes harnesses, the deterministic sanitizer oracle proves every crash. Coordinated disclosure only.</div>
+
+  <!-- ── DIRECT HUNT: paste a git URL and launch (every run we do by hand) ── -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="hd">Direct hunt <span class="mut" style="text-transform:none;letter-spacing:0;font-weight:400">— paste a git URL, pick a brain, launch</span></div>
+    <div class="bd">
+      <div class="row" style="align-items:flex-end;flex-wrap:wrap;gap:12px">
+        <div style="flex:1;min-width:320px">
+          <label class="fld">Git URL</label>
+          <input id="d_url" type="text" placeholder="https://github.com/mackron/dr_libs" style="width:100%">
+        </div>
+        <div><label class="fld">Brain</label><select id="provider" style="min-width:160px"></select></div>
+        <div><label class="fld">Model</label><select id="model" style="min-width:150px"></select></div>
+      </div>
+      <div class="row" style="align-items:flex-end;flex-wrap:wrap;gap:12px;margin-top:10px">
+        <div><label class="fld">Campaign min</label><input id="d_cmin" type="number" value="15" style="width:100px"></div>
+        <div><label class="fld">Max targets</label><input id="d_max" type="number" value="6" style="width:100px"></div>
+        <div><label class="fld">Fuzz time (s)</label><input id="d_fuzz" type="number" value="90" style="width:100px"></div>
+        <div><label class="fld">Sanitizer</label><select id="d_san" style="min-width:150px">
+          <option value="address">address (memory corruption)</option>
+          <option value="address,undefined">address+undefined (UB too)</option>
+        </select></div>
+        <label class="mut" style="font-size:12px;display:flex;align-items:center;gap:5px">
+          <input id="d_ensemble" type="checkbox"> N-version ensemble</label>
+        <label class="mut" style="font-size:12px;display:flex;align-items:center;gap:5px">
+          <input id="d_patch" type="checkbox"> PoV-gated patch</label>
+        <button class="btn primary" onclick="directHunt()" style="white-space:nowrap">▶ Launch hunt</button>
+        <a href="#" onclick="toggleAdv();return false" class="mut" style="font-size:12px">advanced ▾</a>
+      </div>
+      <div id="adv" style="display:none;margin-top:10px;border-top:1px solid var(--line,#2a2a2a);padding-top:10px">
+        <div class="row" style="align-items:flex-end;flex-wrap:wrap;gap:12px">
+          <div><label class="fld">Variant: seed from fix commit</label><input id="d_seedcommit" type="text" placeholder="commit sha (optional)" style="width:220px"></div>
+          <div><label class="fld">Continuous: diff since ref</label><input id="d_diff" type="text" placeholder="git ref (optional)" style="width:180px"></div>
+        </div>
+        <div style="margin-top:10px"><label class="fld">Variant: seed from patch diff</label>
+          <textarea id="d_seedpatch" placeholder="paste a unified diff to hunt un-patched twins (optional)" style="width:100%;min-height:70px;font-family:monospace;font-size:12px"></textarea></div>
+      </div>
+      <div class="mut" style="font-size:11px;margin-top:8px">Quick picks:
+        <a href="#" onclick="fill('https://github.com/mackron/dr_libs');return false">dr_libs</a> ·
+        <a href="#" onclick="fill('https://github.com/jkuhlmann/cgltf');return false">cgltf</a> ·
+        <a href="#" onclick="fill('https://github.com/cesanta/mongoose');return false">mongoose</a> ·
+        <a href="#" onclick="fill('https://github.com/ibireme/yyjson');return false">yyjson</a>
+        <span id="dstatus" style="margin-left:12px"></span>
+      </div>
+    </div>
+  </div>
 
   <div class="card" style="margin-bottom:16px"><div class="bd">
     <div class="row" style="align-items:flex-end">
       <button class="btn primary" onclick="loadScout(true)">⟳ Scout targets</button>
       <div><label class="fld">Campaign minutes / harness</label><input id="cmin" type="number" value="20" style="width:120px"></div>
-      <div><label class="fld">Brain</label><select id="provider" style="min-width:170px"></select></div>
-      <div><label class="fld">Model</label><select id="model" style="min-width:150px"></select></div>
       <span id="status" class="mut" style="font-size:13px"></span>
     </div>
-    <div class="mut" style="font-size:11px;margin-top:8px">Set <code>GITHUB_TOKEN</code> in the server env for higher search rate limits. Coordinated disclosure only — the scout proposes; you decide.</div>
+    <div class="mut" style="font-size:11px;margin-top:8px">Or let the scout find security-relevant C/C++ parsers <b>not already in OSS-Fuzz</b> and rank them. Uses the Brain/Model selected above. Set <code>GITHUB_TOKEN</code> for higher rate limits.</div>
   </div></div>
 
   <div class="card">
@@ -65,6 +108,30 @@ async function launch(url,name){
   if(!r.ok){ document.getElementById('status').textContent='error: '+(await r.text()); return; }
   const {job_id}=await r.json();
   document.getElementById('status').innerHTML=`campaign running — <a href="/run/${job_id}" target="_blank">watch ${esc(name)} →</a>`;
+}
+function fill(u){ document.getElementById('d_url').value=u; }
+function toggleAdv(){ const a=document.getElementById('adv'); a.style.display = a.style.display==='none'?'block':'none'; }
+async function directHunt(){
+  const url=document.getElementById('d_url').value.trim();
+  const s=document.getElementById('dstatus');
+  if(!url){ s.innerHTML='<span style="color:#e88">enter a git URL</span>'; return; }
+  const body={ mode:'repo', url,
+    provider:document.getElementById('provider').value||null,
+    model:document.getElementById('model').value||null,
+    campaign_minutes:Number(document.getElementById('d_cmin').value)||15,
+    max_targets:Number(document.getElementById('d_max').value)||6,
+    fuzz_time:Number(document.getElementById('d_fuzz').value)||90,
+    sanitizer:document.getElementById('d_san').value||'address',
+    ensemble:document.getElementById('d_ensemble').checked,
+    patch:document.getElementById('d_patch').checked,
+    seed_commit:document.getElementById('d_seedcommit').value.trim()||null,
+    diff_ref:document.getElementById('d_diff').value.trim()||null,
+    seed_patch:document.getElementById('d_seedpatch').value.trim()||null };
+  s.textContent='cloning + launching…';
+  const r=await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){ s.innerHTML='<span style="color:#e88">error: '+esc(await r.text())+'</span>'; return; }
+  const {job_id}=await r.json();
+  s.innerHTML=`running — <a href="/run/${job_id}"><b>watch run →</b></a>`;
 }
 (async()=>{ if(await mount('hunt')){ loadProviders(); } })();
 </script>

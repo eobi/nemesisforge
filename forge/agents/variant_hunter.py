@@ -123,10 +123,13 @@ class VariantHunterAgent(Agent):
                 continue
             seen.add(key)
             guard = cscan.func_body(ci, fn)
+            fobj = ci.funcs.get(fn)
             targets.append({
                 "src": f, "focus": fn if fn in ci.funcs else "",
                 "note": f"reach {fn or '?'}() — {nom.get('why','')}",
-                "guard": guard, "dict": cscan.guard_tokens(guard) if guard else []})
+                "guard": guard, "dict": cscan.guard_tokens(guard) if guard else [],
+                "temporal": bool(fn) and ci.has_temporal_sink(fn),
+                "params": list(fobj.params) if fobj else []})
             self.em.emit(EventType.CANDIDATE, title=f"suspect: {fn or '?'}",
                          bug_class="memory_safety", agent=self.name,
                          why=nom.get("why", ""))
@@ -155,6 +158,8 @@ class VariantHunterAgent(Agent):
                 fuzz_time=self.fuzz_time, campaign_minutes=self.campaign_minutes,
                 sanitizer=self.sanitizer, corpus_root=self.corpus_root,
                 symbolic=self.symbolic, format_hints=fh,
+                temporal=t.get("temporal", False),
+                focus_params=t.get("params", []),
                 corpus_tag=_slug(t["focus"] or i))
             return await child.execute() or []
 

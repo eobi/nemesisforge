@@ -94,10 +94,11 @@ def test_benign_ub_marked_low_severity():
 
 
 def test_majority_artifact_derates():
-    # panel votes artifact/artifact/real → majority artifact → de-rated
+    # 4-lens panel votes artifact x3 / real x1 → majority artifact → de-rated
     ctx, _ = _ctx()
     f = _finding("forge_harness.c")
-    asyncio.run(misuse_triage.review(ctx, [f], _SeqLLM(["artifact", "artifact", "real"])))
+    asyncio.run(misuse_triage.review(
+        ctx, [f], _SeqLLM(["artifact", "artifact", "artifact", "real"])))
     assert f.novelty == "artifact"
 
 
@@ -112,3 +113,28 @@ def test_noop_without_llm():
     asyncio.run(misuse_triage.review(ctx, [f], None))  # no model → no change
     assert f.novelty == "candidate"
     assert "misuse_review" not in f.artifacts
+
+
+def test_runtime_channels_reach_reviewer():
+    # AgentFlow 4-channel: coverage + sanitizer trace must appear in the prompt.
+    seen = {}
+
+    class _CapLLM:
+        available = True
+
+        def complete_json(self, system, prompt):
+            seen["prompt"] = prompt
+            return ({"verdict": "real", "category": "t", "reason": "m"}, {})
+
+    f = _finding("lib.c")
+    f.candidate.proposed_check["coverage"] = 812
+    f.verdict.evidence["sanitizer_output"] = (
+        "==ERROR: AddressSanitizer: heap-buffer-overflow WRITE of size 4")
+    asyncio.run(misuse_triage.review(ctx_and(f), [f], _CapLLM()))
+    assert "coverage=812" in seen["prompt"]
+    assert "AddressSanitizer: heap-buffer-overflow" in seen["prompt"]
+
+
+def ctx_and(_f):
+    ctx, _ = _ctx()
+    return ctx

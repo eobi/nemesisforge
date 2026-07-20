@@ -122,26 +122,49 @@ _LENSES = [
      "feeding untrusted INPUT DATA through a documented API with correct setup (real "
      "bug), or does it require the harness to mis-drive setup/config the attacker "
      "does not control (artifact)?"),
+    ("runtime-evidence", "Focus ONLY on the RUNTIME signal: does the coverage depth "
+     "and the sanitizer report describe a corruption INSIDE library code driven by "
+     "input data (real bug), or a write/read in the harness's own stack/heap frame, "
+     "or a crash at near-zero coverage right at the entry (artifact)? Trust the ASan "
+     "report's overflowed-object and offending-frame over any narrative."),
 ]
 
 
 async def _review_one(finding, repo, llm, lens: str = "") -> dict:
     pc = finding.candidate.proposed_check or {}
     harness = pc.get("harness", "")
-    cr = (getattr(finding.verdict, "evidence", None) or {}).get("crash", {})
+    ev = getattr(finding.verdict, "evidence", None) or {}
+    cr = ev.get("crash", {})
     frames = cr.get("frames") or []
     top = frames[0] if frames else {}
     func, file, line = top.get("func", "?"), top.get("file", "?"), top.get("line", 0)
     alloc = _alloc_in_harness(finding)
     snippet = _lib_snippet(repo, file, int(line or 0))
 
+    # Runtime signal (AgentFlow): give reviewers coverage + the sanitizer trace, not
+    # just the crash text. A crash reached through DEEP coverage via the real parser
+    # reads very differently from a shallow harness artifact; the ASan report shows
+    # exactly which buffer overflowed and by how much.
+    cov = pc.get("coverage")
+    san = ev.get("sanitizer_output") or (pc.get("fuzz_output") or "")
+    runtime = ""
+    if cov is not None and cov >= 0:
+        runtime += (f"RUNTIME: crash reached at coverage={cov} edges. "
+                    f"(High coverage ⇒ the fuzzer drove deep through real parsing "
+                    f"before crashing; very low coverage ⇒ crash near the harness "
+                    f"entry, more likely an artifact.)\n")
+    if san:
+        runtime += f"SANITIZER REPORT:\n```\n{san[-1800:]}\n```\n"
+
     prompt = (
         f"CRASH: {cr.get('bug_type','?')} in {func} at {file}:{line}.\n"
         f"Overflowed buffer allocated in: "
         f"{'THE HARNESS' if alloc else ('the library/elsewhere' if alloc is False else 'unknown')}.\n\n"
+        + runtime + "\n"
         + (f"REVIEW LENS — {lens}\n\n" if lens else "")
         + f"HARNESS:\n```c\n{harness[:4000]}\n```\n\n"
         f"LIBRARY SOURCE around the crash ({file}:{line}):\n```c\n{snippet[:2500]}\n```\n\n"
+        f"Weigh the sanitizer report + coverage alongside the source. "
         f"Is this a real library vulnerability or a harness artifact?")
     try:
         parsed, _ = await asyncio.to_thread(llm.complete_json, _SYSTEM, prompt)

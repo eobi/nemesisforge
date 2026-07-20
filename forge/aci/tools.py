@@ -93,3 +93,35 @@ class ACI:
     def symbolize(self, stack: str) -> str:
         fn = getattr(self.target, "symbolize", None)
         return fn(stack) if callable(fn) else stack
+
+    # ── debugger in the loop (K-REPRO / Big Sleep: root-cause, not just a crash) ──
+    def debug(self, binary, *, stdin: bytes = b"", timeout: float = 60.0) -> str:
+        """Run `binary` under a batch debugger on the crashing input and return the
+        backtrace + fault location — the root-cause context a vendor report needs.
+        Portable: gdb (Linux) → lldb (macOS) → plain run() fallback. Feeds the input
+        via a temp file the debugger reads on stdin. Never raises."""
+        import shlex
+        import shutil
+        import subprocess
+        import tempfile
+        binp = str(binary)
+        try:
+            tf = tempfile.NamedTemporaryFile(delete=False)
+            tf.write(stdin or b"")
+            tf.close()
+            gdb, lldb = shutil.which("gdb"), shutil.which("lldb")
+            qf = shlex.quote(tf.name)
+            if gdb:
+                argv = [gdb, "-batch", "-nx",
+                        "-ex", f"run < {qf}", "-ex", "bt", "-ex", "info registers",
+                        "-ex", "quit", "--args", binp]
+            elif lldb:
+                argv = [lldb, "--batch", "-o", f"process launch -i {qf}",
+                        "-o", "bt", "-o", "quit", binp]
+            else:                             # no debugger → plain run for the trace
+                obs = self.target.run(binary, stdin=stdin, timeout=timeout)
+                return (getattr(obs, "output", "") or getattr(obs, "stderr", ""))[-6000:]
+            p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+            return ((p.stdout or "") + (p.stderr or ""))[-6000:]
+        except Exception as e:
+            return f"debug unavailable: {type(e).__name__}"

@@ -95,7 +95,8 @@ class HarnessSynthAgent(Agent):
                  focus_function: str = "", guard_context: str = "",
                  dict_tokens: Optional[list] = None, repairs: int = 2,
                  campaign_minutes: int = 0, symbolic: bool = False,
-                 format_hints=None,
+                 format_hints=None, temporal: bool = False,
+                 focus_params: Optional[list] = None,
                  sanitizer: str = "address", corpus_tag: str = "h") -> None:
         super().__init__(ctx, name=name, parent_id=parent_id)
         self.repo = repo or getattr(ctx, "repo", None)
@@ -112,6 +113,10 @@ class HarnessSynthAgent(Agent):
         self.guard_context = guard_context        # sink source for LLM seed-craft
         self.dict_tokens = list(dict_tokens or [])
         self.sanitizer = sanitizer
+        # K-REPRO difficulty gradient: this target holds a temporal (UAF/double-free)
+        # sink that plain fuzzing under-finds → give the symbolic lens more budget.
+        self.temporal = temporal
+        self.focus_params = list(focus_params or [])   # Phase 2: predicate synthesis
         self.corpus_root = Path(corpus_root) if corpus_root else ctx.artifacts / "corpus"
         # When the reasoning tier aims us at specific sources/sinks (Phase I), we
         # harness exactly those with the suspect sink emphasized in the prompt.
@@ -202,10 +207,17 @@ class HarnessSynthAgent(Agent):
 
             self.log(f"live harness for {src.name} (probe cov={cov}) — co-driving fuzz"
                      + (f" aimed at {self.focus_function}()" if self.focus_function else ""))
+            # Phase 2 (Locus): synthesize + symbolically PROVE progress predicates
+            # toward this target's sink and instrument them into a patched copy of the
+            # library source, so the fuzzer runs DIRECTED. Gated on the symbolic
+            # (Docker) path — without a proof nothing is instrumented and we fuzz
+            # undirected exactly as before.
+            fuzz_sources = await self._apply_predicates(
+                harness, src, incs, self.lib_sources or [src])
             rounds = 4
             child = self.child(
                 CoDrivingFuzzAgent, harness=harness,
-                target_sources=self.lib_sources or [src],
+                target_sources=fuzz_sources,
                 include_dirs=incs, corpus_dir=corpus, llm=self.llm,
                 focus_function=self.focus_function, guard_context=self.guard_context,
                 dict_tokens=self.dict_tokens, sanitizer=self.sanitizer,
@@ -224,6 +236,8 @@ class HarnessSynthAgent(Agent):
                 # no-ops cleanly.)
                 sym_budget = min(300, (self.campaign_minutes * 60)
                                  or max(30, self.fuzz_time))
+                if self.temporal:            # K-REPRO: spend more where fuzzing is weak
+                    sym_budget = min(600, int(sym_budget * 2))
                 sym = self.child(
                     SymbolicHunterAgent, harness=harness,
                     target_sources=self.lib_sources or [src],
@@ -296,6 +310,56 @@ class HarnessSynthAgent(Agent):
                 continue                     # hallucinated / unresolvable local include
             out.append(line)
         return "\n".join(out)
+
+    async def _apply_predicates(self, harness: str, src: Path, incs, sources: list):
+        """Phase 2 (Locus directed reachability): synthesize progress predicates for
+        the focus function, PROVE each is a strict relaxation (symbolic, Docker/Linux),
+        and instrument the survivors into patched copies of the library sources. Returns
+        the source list to fuzz — patched when predicates were proven, otherwise the
+        originals unchanged. Fully inert without the symbolic path."""
+        if not (self.symbolic and self.focus_function and self.focus_params):
+            return sources
+        from . import predicates as _pred
+        from .symbolic_hunter import angr_available
+        if not angr_available():
+            return sources          # no proof possible → undirected fuzzing
+        preds = await _pred.synthesize(
+            self.llm, function=self.focus_function, params=self.focus_params,
+            guard_body=self.guard_context)
+        if not preds:
+            return sources
+        validated = await _pred.validate(
+            preds, target=self.ctx.target, harness=harness, include_dirs=incs,
+            target_sources=sources, sanitizer=self.sanitizer)
+        if not validated:
+            self.log(f"directed: {len(preds)} predicate(s) synthesized, "
+                     f"0 proved strict-relaxation — fuzzing undirected")
+            return sources
+        by_fn: dict = {}
+        for p in validated:
+            by_fn.setdefault(p.function, []).append(p)
+        patched: list = []
+        for s in sources:
+            sp = Path(s)
+            try:
+                text = sp.read_text(errors="replace")
+            except Exception:
+                patched.append(s)
+                continue
+            new_text, applied = text, []
+            for fn, plist in by_fn.items():
+                if re.search(r"\b" + re.escape(fn) + r"\s*\(", text):
+                    new_text, ap = _pred.instrument_source(new_text, fn, plist)
+                    applied += ap
+            if new_text != text and applied:
+                out = sp.with_name(sp.stem + ".forge_pred" + sp.suffix)
+                out.write_text(new_text)
+                patched.append(out)
+                self.log(f"directed: proved + instrumented {len(applied)} "
+                         f"predicate(s) into {sp.name}")
+            else:
+                patched.append(s)
+        return patched
 
     async def _build_probe(self, harness: str, src: Path, incs, corpus: Path
                            ) -> tuple[bool, bool, int, str, str]:

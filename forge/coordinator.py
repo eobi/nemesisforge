@@ -28,7 +28,8 @@ class Coordinator(Agent):
 
     def __init__(self, ctx, *, discovery: list[DiscoveryFactory],
                  oracles: list[Oracle], escalation: list[Oracle] | None = None,
-                 validate: bool = False, package: bool = True, llm=None,
+                 validate: bool = False, package: bool = True, patch: bool = False,
+                 llm=None,
                  llm_discovery: list[DiscoveryFactory] | None = None,
                  harness: str = "", name: str = "coordinator") -> None:
         super().__init__(ctx, name=name, parent_id="")
@@ -36,6 +37,7 @@ class Coordinator(Agent):
         self.router = OracleRouter(oracles)
         self.escalation = list(escalation or [])
         self.package = package          # assemble the vendor packet at rung >= 4
+        self.patch = patch              # PoV-gated patch: prove a fix kills the PoV
         self.llm = llm                  # the brain (None/NullLLM → deterministic only)
         self.llm_discovery = list(llm_discovery or [])
         self.harness = harness          # passed to LLM discovery/synth for source
@@ -104,10 +106,73 @@ class Coordinator(Agent):
         return finding
 
     async def _package(self, cand: Candidate, finding: Finding) -> Finding:
-        """Assemble the vendor-disclosure packet → promote to VENDOR_READY."""
+        """Assemble the vendor-disclosure packet → promote to VENDOR_READY. First run
+        the agentic debugger-in-the-loop reproduce to attach a root-cause backtrace
+        (K-REPRO / Big Sleep) — best-effort, never gates."""
         from .agents.reporter import ReporterAgent
+        from .agents.reproduce import ReproduceAgent
+        try:
+            trace = await self.child(ReproduceAgent, candidate=cand).execute()
+            if trace:
+                finding.artifacts["root_cause"] = trace
+        except Exception:
+            pass
         agent = self.child(ReporterAgent, finding=finding, llm=self.llm)
         return await agent.execute() or finding
+
+    async def _patch(self, cand: Candidate, finding: Finding) -> Finding:
+        """PoV-gated patch (Buttercup/ATLANTIS): the LLM writes a fix, the
+        DifferentialOracle PROVES the reproducer still crashes the vulnerable build and
+        is clean on the patched build. A proven patch climbs to PROVEN_EXPLOIT and is
+        attached; an unproven one is WITHHELD. Also a precision check: a 'fix' that
+        doesn't stop the crash suggests a harness artifact, not a library bug."""
+        from pathlib import Path
+        from . import patcher
+        from .oracles.differential import DifferentialOracle
+        if self.llm is None or not getattr(self.llm, "available", False):
+            return finding
+        pc = cand.proposed_check or {}
+        ev = finding.verdict.evidence or {}
+        cr = ev.get("crash", {})
+        top = (cr.get("frames") or [{}])[0]
+        crash_name = Path(top.get("file", "") or cand.location.path or "").name
+        srcs = [str(s) for s in (pc.get("target_sources") or [])]
+        tgt = next((s for s in srcs if Path(s).name == crash_name), None)
+        if not tgt or not Path(tgt).exists():
+            return finding                 # can't locate the crashing library source
+        text = Path(tgt).read_text(errors="replace")
+        patched = await patcher.generate_patch(
+            self.llm, source_text=text, function=top.get("func", ""),
+            line=int(top.get("line", 0) or 0), bug_type=cr.get("bug_type", ""),
+            sanitizer_output=ev.get("sanitizer_output", ""))
+        if not patched:
+            return finding
+        out = Path(tgt).with_name(Path(tgt).stem + ".forge_patch" + Path(tgt).suffix)
+        try:
+            out.write_text(patched)
+        except Exception:
+            return finding
+        cand.proposed_check["patched_harness"] = pc.get("harness")
+        cand.proposed_check["patched_sources"] = [
+            str(out) if s == tgt else s for s in srcs]
+        verdict = await asyncio.to_thread(DifferentialOracle().verify, self.ctx, cand)
+        if verdict.outcome is Outcome.PROVEN:
+            finding.artifacts["patch"] = {"proven": True, "file": crash_name,
+                                          "path": str(out), "rung": int(verdict.rung)}
+            self.log(f"PoV-gated patch PROVEN for {cand.title} — fix kills the PoV")
+            if verdict.rung > finding.rung:
+                self.ctx.ladder.apply(cand, verdict)
+                self.em.emit(EventType.RUNG_UP, title=cand.title,
+                             rung=int(verdict.rung), rung_name=verdict.rung.name)
+                return Finding(candidate=cand, verdict=verdict, rung=verdict.rung,
+                               primitive=finding.primitive)
+        else:
+            finding.artifacts["patch"] = {
+                "proven": False,
+                "reason": (verdict.evidence or {}).get("reason", verdict.feedback)}
+            self.log(f"patch generated but NOT proven ({verdict.outcome.value}) — "
+                     f"withheld")
+        return finding
 
     async def run(self) -> list[Finding]:
         tname = getattr(self.ctx.target, "name", None) or self.ctx.job_id
@@ -172,6 +237,8 @@ class Coordinator(Agent):
                                   rung=verdict.rung, primitive=verdict.primitive)
                 if self.escalation:
                     finding = await self._escalate(cand, finding)
+                if self.patch and finding.reportable:
+                    finding = await self._patch(cand, finding)
                 if self.validate and finding.reportable:
                     finding = await self._validate(cand, finding)
                 if self.package and finding.rung >= VENDOR_MIN:
