@@ -19,6 +19,7 @@ endpoint works by pointing `base_url` at it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
@@ -27,6 +28,21 @@ from typing import Any, Optional, Protocol, runtime_checkable
 from .config import load_env
 
 load_env()   # map the INI .env into provider env vars at import
+
+_log = logging.getLogger("nemesis-forge.llm")
+
+
+def _describe(e: Exception) -> str:
+    """A useful one-line error, including the HTTP body for API errors — so a
+    failed LLM call is VISIBLE (auth/rate/billing/format) instead of silently
+    becoming an empty string that looks like 'no targets found'."""
+    if isinstance(e, urllib.error.HTTPError):
+        try:
+            body = e.read().decode(errors="replace")[:300]
+        except Exception:
+            body = ""
+        return f"HTTP {e.code} {body}"
+    return f"{type(e).__name__}: {str(e)[:200]}"
 
 
 @runtime_checkable
@@ -106,6 +122,7 @@ class AnthropicClient:
     def __init__(self, model: str, api_key: str, base: str, timeout: float = 120):
         self.model, self.api_key, self.base, self.timeout = model, api_key, base, timeout
         self.available = bool(api_key)
+        self.last_error: Optional[str] = None
 
     def complete(self, system, user, *, max_tokens=2048) -> str:
         if not self.available:
@@ -117,8 +134,11 @@ class AnthropicClient:
                 {"model": self.model, "max_tokens": max_tokens, "system": system,
                  "messages": [{"role": "user", "content": user}]}, self.timeout)
             parts = d.get("content") or []
+            self.last_error = None
             return "".join(p.get("text", "") for p in parts if isinstance(p, dict))
-        except Exception:
+        except Exception as e:
+            self.last_error = _describe(e)
+            _log.warning("anthropic %s call failed: %s", self.model, self.last_error)
             return ""
 
     def complete_json(self, system, user, *, max_tokens=4096):
@@ -137,6 +157,7 @@ class OpenAICompatClient:
         self.model, self.api_key, self.base, self.timeout = model, api_key, base, timeout
         # local servers need no key; hosted ones do
         self.available = True
+        self.last_error: Optional[str] = None
 
     def complete(self, system, user, *, max_tokens=2048) -> str:
         headers = {}
@@ -157,8 +178,11 @@ class OpenAICompatClient:
         try:
             d = _post_json(f"{self.base}/v1/chat/completions", headers, body,
                            self.timeout)
+            self.last_error = None
             return d["choices"][0]["message"]["content"] or ""
-        except Exception:
+        except Exception as e:
+            self.last_error = _describe(e)
+            _log.warning("openai-compat %s call failed: %s", self.model, self.last_error)
             return ""
 
     def complete_json(self, system, user, *, max_tokens=4096):

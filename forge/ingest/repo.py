@@ -77,6 +77,7 @@ def clone(url: str, dest: Path, *, ref: Optional[str] = None,
         info.build_system = detect_build_system(dest)
         info.sources = rank_sources(dest)
         info.headers = _find(dest, {".h", ".hpp"}, limit=200)
+        materialize_single_header_impls(dest)   # stb/dr_libs/cgltf: make impl linkable
         info.library = library_sources(dest)
         return info
 
@@ -96,6 +97,7 @@ def clone(url: str, dest: Path, *, ref: Optional[str] = None,
     info.build_system = detect_build_system(dest)
     info.sources = rank_sources(dest)
     info.headers = _find(dest, {".h", ".hpp"}, limit=200)
+    materialize_single_header_impls(dest)       # stb/dr_libs/cgltf: make impl linkable
     info.library = library_sources(dest)
     return info
 
@@ -311,6 +313,58 @@ def library_sources(root: Path, *, limit: int = 250) -> list[Path]:
         if len(out) >= limit:
             break
     return out
+
+
+# A macro guarding a single-header library's implementation, USED in a guard
+# (`#ifdef X_IMPLEMENTATION` / `#if defined(X_IMPLEMENTATION)`) — the stb / dr_libs /
+# cgltf convention. Matched only on preprocessor guard lines, not comments/examples.
+_IMPL_GUARD = re.compile(
+    r"^\s*#\s*if(?:def)?\s+.*?\b([A-Z][A-Z0-9_]*_IMPLEMENTATION)\b", re.MULTILINE)
+
+
+def materialize_single_header_impls(root: Path) -> list[Path]:
+    """Header-only libraries (stb, dr_libs, cgltf) ship their implementation INSIDE
+    a `.h`, compiled only when a `*_IMPLEMENTATION` macro is defined. With no `.c`,
+    `library_sources` finds nothing and the pipeline fuzzes nothing. For each such
+    header we synthesize a tiny impl TU — `#define <MACRO>` + `#include "<header>"` —
+    so the symbols exist to link against; the harness then includes the header
+    normally (declarations only). Idempotent; skips headers already backed by a `.c`
+    that defines the macro. Returns the synthesized files."""
+    root = Path(root)
+    made: list[Path] = []
+    # macros already defined by a real .c (avoid double-compiling the implementation)
+    defined_in_c: set[str] = set()
+    for c in root.rglob("*.c"):
+        try:
+            for m in re.finditer(r"^\s*#\s*define\s+([A-Z][A-Z0-9_]*_IMPLEMENTATION)\b",
+                                  c.read_text(errors="replace"), re.MULTILINE):
+                defined_in_c.add(m.group(1))
+        except Exception:
+            continue
+    for h in sorted(root.rglob("*.h")):
+        parts = {part.lower() for part in h.relative_to(root).parts[:-1]}
+        if parts & _NONLIB_DIRS or h.name.startswith("_forge_impl_"):
+            continue
+        try:
+            text = h.read_text(errors="replace")
+        except Exception:
+            continue
+        macros = [m for m in dict.fromkeys(_IMPL_GUARD.findall(text))
+                  if m not in defined_in_c]
+        if not macros:
+            continue
+        impl = root / f"_forge_impl_{h.stem}.c"
+        if impl.exists():
+            made.append(impl)
+            continue
+        rel = h.relative_to(root).as_posix()
+        body = "".join(f"#define {m}\n" for m in macros) + f'#include "{rel}"\n'
+        try:
+            impl.write_text(body)
+            made.append(impl)
+        except Exception:
+            continue
+    return made
 
 
 def entry_snippet(path: Path, *, max_lines: int = 120) -> str:

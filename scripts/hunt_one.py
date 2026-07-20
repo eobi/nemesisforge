@@ -3,7 +3,7 @@
 Usage: python scripts/hunt_one.py <git-url> <campaign_minutes> <max_targets> [fuzz_time]
 Loads .env (Anthropic), runs repo_job -> run_job, prints findings + rungs.
 """
-import asyncio, sys, uuid, json, time
+import asyncio, os, sys, uuid, json, time
 from pathlib import Path
 
 from forge.config import load_env
@@ -27,7 +27,9 @@ async def main():
     ctx, discovery, oracles, escalation, llm = repo_job(
         job_id, url, artifacts_root=root, max_targets=max_targets,
         fuzz_time=fuzz_time, campaign_minutes=campaign_minutes,
-        sanitizer="address", provider="anthropic", model="claude-opus-4-8",
+        sanitizer=os.environ.get("FORGE_SAN", "address"),
+        provider=os.environ.get("FORGE_PROVIDER", "openai"),
+        model=os.environ.get("FORGE_MODEL", "gpt-5.1"),
     )
     print(f"[{time.strftime('%H:%M:%S')}] repo cloned: {ctx.repo.root} "
           f"lib_sources={len(ctx.repo.library or [])} "
