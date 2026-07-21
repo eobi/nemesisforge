@@ -20,6 +20,7 @@ for url in "$@"; do
     -e FORGE_PROVIDER=openai -e FORGE_MODEL=gpt-5.1 -e FORGE_SAN=address \
     -v "$ROOT/.env:/forge/.env:ro" \
     -v "$ROOT/runs:/forge/runs" \
+    -v "$ROOT/forge:/forge/forge:ro" -v "$ROOT/packaging/docker/hunt.sh:/forge/packaging/docker/hunt.sh:ro" \
     --name "forge-$name" nemesis-forge "$url" "$MINS" 4 >/dev/null
   echo "launched forge-$name  ($url)"
 done

