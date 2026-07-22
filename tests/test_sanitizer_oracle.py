@@ -108,3 +108,32 @@ def test_build_failure_is_inconclusive(tmp_path):
     v = SanitizerOracle().verify(ctx, cand)
     assert v.outcome is Outcome.INCONCLUSIVE
     assert "build failed" in v.feedback
+
+
+# ── regression: LF_DRIVER must size the input buffer EXACTLY to the input ──
+# A libFuzzer harness that reads past `size` is an out-of-bounds READ of the
+# input buffer. libFuzzer sizes `data` tightly (redzone right after), so it
+# faults; the replay driver must too. A slack read buffer silently absorbs the
+# read and the oracle FALSELY refutes a real crash (fixed 2026-07-22).
+OOB_READ_HARNESS = r"""
+#include <stdint.h>
+#include <stddef.h>
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size){
+  if (size < 1) return 0;
+  volatile int s = 0;
+  for (int i = 0; i < 64; i++) s += data[i];   /* reads past `size` → OOB */
+  return s;
+}
+"""
+
+
+def test_libfuzzer_oob_read_past_input_is_proven_not_refuted(tmp_path):
+    import base64
+    ctx = _ctx(tmp_path)
+    cand = Candidate(
+        bug_class="memory_safety", title="libfuzzer oob read past input",
+        proposed_check={"harness": OOB_READ_HARNESS, "libfuzzer": True,
+                        "input_b64": base64.b64encode(b"\x01").decode()})
+    v = SanitizerOracle().verify(ctx, cand)
+    assert v.outcome is Outcome.PROVEN, f"driver masked the OOB read: {v.feedback}"
+    assert v.rung >= Rung.PROVEN_FAULT

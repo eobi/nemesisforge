@@ -34,19 +34,29 @@ LF_DRIVER = r"""
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 extern int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 int main(int argc, char **argv) {
   size_t cap = 1 << 16, n = 0;
-  unsigned char *buf = (unsigned char *)malloc(cap);
+  unsigned char *tmp = (unsigned char *)malloc(cap);
   FILE *f = stdin;
   if (argc > 1) { f = fopen(argv[1], "rb"); if (!f) return 0; }
   size_t r;
-  while ((r = fread(buf + n, 1, cap - n, f)) > 0) {
+  while ((r = fread(tmp + n, 1, cap - n, f)) > 0) {
     n += r;
-    if (n == cap) { cap *= 2; buf = (unsigned char *)realloc(buf, cap); }
+    if (n == cap) { cap *= 2; tmp = (unsigned char *)realloc(tmp, cap); }
   }
-  LLVMFuzzerTestOneInput(buf, n);
-  free(buf);
+  /* Hand LLVMFuzzerTestOneInput a buffer sized EXACTLY to the input, so an
+     out-of-bounds READ past the input faults under ASan exactly as it does
+     under libFuzzer (which tightly sizes `data`, redzone immediately after).
+     A slack read buffer would silently absorb OOB reads that only trip when
+     the allocation ends at `size` — the false-negative that made the oracle
+     refute real libFuzzer crashes. */
+  unsigned char *data = (unsigned char *)malloc(n ? n : 1);
+  if (n) memcpy(data, tmp, n);
+  free(tmp);
+  LLVMFuzzerTestOneInput(data, n);
+  free(data);
   return 0;
 }
 """
