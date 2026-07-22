@@ -186,6 +186,7 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
              fuzz_time: int = 30, campaign_minutes: int = 0, escalate: bool = True,
              use_build_system: bool = True, use_symbolic: bool = True,
              ensemble: bool = False, patch: bool = False,
+             reach_hints: Optional[set] = None,
              provider: Optional[str] = None, model: Optional[str] = None,
              api_key: Optional[str] = None, base_url: Optional[str] = None):
     """Point Forge at a real open-source repo by URL: clone → the LLM synthesizes
@@ -201,6 +202,13 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     root = artifacts_root or (Path.cwd() / "runs")
     repo_name = re.sub(r"\.git$", "", url.rstrip("/").split("/")[-1]) or "repo"
     info = _repo.clone(url, root / job_id / repo_name, ref=ref)
+    # Reachability directing (asset-context speedup): when the caller passes the
+    # function-name hints for the surface the live asset exposes, prioritize the
+    # matching entry-point sources so harness synthesis aims at the reachable
+    # decoders first. Inert by default (None) and never prunes to nothing.
+    if reach_hints:
+        from .ingest.reachability import focus_sources
+        info.sources = focus_sources(info.sources, reach_hints, info.root)
     target = SourceTarget(root / job_id / "work", name=repo_name)
     ctx = JobContext(job_id, target=target, artifacts_root=root)
     ctx.repo = info                                  # for the visibility layer
@@ -274,6 +282,47 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     return ctx, discovery, oracles, escalation, llm
 
 
+def zeroday_repo_job(job_id: str, artifact, *, reach_hints=None,
+                     seed_patch: str = "", seed_commit: Optional[str] = None,
+                     diff_ref: Optional[str] = None,
+                     artifacts_root: Optional[Path] = None,
+                     ensemble: bool = True, patch: bool = False,
+                     campaign_minutes: int = 0,
+                     provider: Optional[str] = None, model: Optional[str] = None,
+                     api_key: Optional[str] = None, base_url: Optional[str] = None):
+    """The asset-pointed zero-day campaign assembler: a resolved OSS-source
+    artifact (from `forge.ingest.resolve`) → a directed, verifier-gated hunt.
+
+    It stacks the asset-context speedups on top of Forge's existing repo hunt:
+      - **version-exact pin:** clone at `artifact.ref` (the exact running version),
+        so patch-seeding targets the *specific* missing fixes, not a generic corpus;
+      - **reachability directing:** `reach_hints` (from `reachability.reachable_hints`
+        on the asset's exposure) prioritizes the entry-point sources the asset
+        actually exposes, pruning the search before fuzzing;
+      - **patch-seeded variant hunting:** `seed_patch`/`seed_commit`/`diff_ref` feed
+        the variant hunter a known fix to find un-patched twins;
+      - **ensemble ON by default:** orthogonal strategies so no single blind spot stalls.
+
+    Thin, additive wrapper over `repo_job` (reuses its whole pipeline + the
+    escalation oracles). Only OSS-source artifacts route here; binary artifacts go
+    through `binary_lab_job` (native-verify + exploitability). Raises a clear error
+    for a non-source artifact so a caller can dispatch correctly."""
+    kind = getattr(artifact, "kind", None)
+    if kind != "source":
+        raise ValueError(
+            f"zeroday_repo_job needs a resolved SOURCE artifact; got kind={kind!r}. "
+            f"Route binaries through binary_lab_job, packages via the Phase-1 fetch.")
+    url = getattr(artifact, "locator", "")
+    ref = getattr(artifact, "ref", "") or None
+    hints = set(reach_hints) if reach_hints else None
+    return repo_job(
+        job_id, url, ref=ref, diff_ref=diff_ref, seed_commit=seed_commit,
+        seed_patch=seed_patch, artifacts_root=artifacts_root,
+        campaign_minutes=campaign_minutes, ensemble=ensemble, patch=patch,
+        reach_hints=hints, provider=provider, model=model, api_key=api_key,
+        base_url=base_url)
+
+
 def binary_lab_job(job_id: str, binary_path: str, *,
                    artifacts_root: Optional[Path] = None,
                    name: str = "binary-target", max_tries: int = 8
@@ -281,6 +330,8 @@ def binary_lab_job(job_id: str, binary_path: str, *,
     """Assemble a job for a closed-source binary: fuzz it concretely → prove the
     crash by signal → (symbolic escalation lights up if angr is present)."""
     from .oracles.binary_crash import BinaryCrashOracle
+    from .oracles.native_verify import NativeVerifyOracle
+    from .oracles.exploitability import ExploitabilityOracle
     from .oracles.symbolic import SymbolicOracle
     from .targets.binary import BinaryTarget
     from .agents.binary_recon import BinaryReconAgent
@@ -294,6 +345,10 @@ def binary_lab_job(job_id: str, binary_path: str, *,
     discovery = [partial(FuzzDiscoveryAgent, harness="", bug_class="binary_crash",
                          max_tries=max_tries),
                  partial(BinaryReconAgent, binary=Path(binary_path))]
-    oracles: list[Oracle] = [BinaryCrashOracle()]
-    escalation: list[Oracle] = [SymbolicOracle()]
+    # NativeVerifyOracle handles the distinct `instrumented_crash` class a
+    # coverage-guided (Frida/QEMU) discovery agent emits — it never shadows the
+    # BinaryCrashOracle. ExploitabilityOracle joins the escalation tier: after a
+    # fault is proven it grades the faulting instruction into a primitive (rung 4).
+    oracles: list[Oracle] = [BinaryCrashOracle(), NativeVerifyOracle()]
+    escalation: list[Oracle] = [SymbolicOracle(), ExploitabilityOracle()]
     return ctx, discovery, oracles, escalation
