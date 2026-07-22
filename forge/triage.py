@@ -87,9 +87,41 @@ def _signal_of(rc: Optional[int]) -> Optional[int]:
     return None
 
 
-def parse(output: str, rc: Optional[int] = None) -> CrashInfo:
+# ── Windows NTSTATUS exceptions (Phase 2 — argv-mode Windows agent) ──
+# A crashing Windows process exits WITH its exception code as the exit code, so a
+# crash is detectable from the exit code alone, no debugger needed for M0. The
+# access type (READ/WRITE) + faulting address come later from the exploitability
+# oracle (WinDbg); here we record the class. (name, memory_relevant, security_relevant)
+_WINDOWS_EXCEPTIONS = {
+    0xC0000005: ("access-violation", True, False),
+    0xC0000374: ("heap-corruption", True, True),
+    0xC0000409: ("stack-buffer-overrun", True, True),      # /GS cookie tripped
+    0xC00000FD: ("stack-overflow", True, False),
+    0xC0000006: ("in-page-error", True, False),
+    0xC000001D: ("illegal-instruction", False, False),
+    0xC0000094: ("integer-divide-by-zero", False, False),
+    0xC0000096: ("privileged-instruction", False, False),
+    0x80000003: ("breakpoint", False, False),
+}
+_WINDOWS_MEMORY = {0xC0000005, 0xC0000374, 0xC0000409, 0xC00000FD, 0xC0000006}
+
+
+def _ntstatus_of(code: Optional[int]) -> Optional[int]:
+    """Normalize a process exit code to an unsigned 32-bit NTSTATUS exception code,
+    or None if it isn't one. subprocess may surface the code signed (negative), so
+    mask to 32-bit; a real exception code has a 0xC (error) or 0x8 (warning) top
+    nibble, well outside any POSIX 128+signal exit code."""
+    if code is None:
+        return None
+    u = code & 0xFFFFFFFF
+    return u if (u & 0xF0000000) in (0xC0000000, 0x80000000) else None
+
+
+def parse(output: str, rc: Optional[int] = None,
+          win_exit: Optional[int] = None) -> CrashInfo:
     """Parse a run into CrashInfo. A sanitizer report wins; otherwise a fatal
-    signal in `rc` (for a bare binary with no sanitizer) is a crash too."""
+    signal in `rc` (bare Linux binary) or a Windows NTSTATUS exception in
+    `win_exit` (Windows agent, argv-mode) is a crash too."""
     text = output or ""
     ci = CrashInfo()
 
@@ -123,6 +155,20 @@ def parse(output: str, rc: Optional[int] = None) -> CrashInfo:
             if sig in _MEMORY_SIGNALS:
                 ci.access = "WRITE"      # conservative; a SEGV write is common
             ci.summary = f"process crashed with SIG{ci.bug_type.upper()} (signal {sig})"
+
+    # No sanitizer + no POSIX signal → check for a Windows NTSTATUS exception.
+    # Additive: only fires when win_exit is supplied (the Windows agent).
+    if not ci.crashed and win_exit is not None:
+        nt = _ntstatus_of(win_exit)
+        if nt is not None:
+            ci.crashed = True
+            name, mem, _sec = _WINDOWS_EXCEPTIONS.get(
+                nt, ("windows-exception", nt in _WINDOWS_MEMORY, False))
+            ci.bug_type = name
+            if mem:
+                ci.access = "WRITE"      # conservative; exploitability oracle refines
+            ci.summary = (f"process crashed with {name} "
+                          f"(NTSTATUS 0x{nt:08X})")
 
     if ci.crashed:
         top = ci.top
