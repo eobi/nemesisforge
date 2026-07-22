@@ -81,6 +81,18 @@ class CoverageBackend(Protocol):
 FRIDA_STALKER_AGENT = r"""
 'use strict';
 const seen = new Set();
+// First-chance exception handler — the load-bearing part for Windows GUI
+// file-parsers. Delphi/native apps wrap parsing in an SEH try/except and SWALLOW
+// access-violations (no process exit-code crash), so exit-code detection misses
+// real memory-safety bugs. Frida's handler runs BEFORE the app's SEH, so it sees
+// the fault first. We only observe (return false) — never alter behavior.
+Process.setExceptionHandler(function (d) {
+  var pc = '';
+  try { pc = d.context ? d.context.pc.toString() : ''; } catch (e) {}
+  send({ event: 'crash', kind: d.type,
+         address: d.address ? d.address.toString() : '', pc: pc });
+  return false;
+});
 function armStalker(tid) {
   Stalker.follow(tid, {
     events: { compile: true },
@@ -156,7 +168,7 @@ class FridaStalkerCoverage:
         argv = [str(binary)] + [a.replace("{file}", path) for a in tmpl]
 
         edges: set = set()
-        crash = {"hit": False, "report": ""}
+        crash = {"hit": False, "report": "", "addr": ""}
         try:
             device = frida.get_local_device()
             pid = device.spawn(argv)
@@ -169,6 +181,15 @@ class FridaStalkerCoverage:
             session.on("detached", _on_detached)
 
             script = session.create_script(FRIDA_STALKER_AGENT)
+
+            def _on_message(msg, data):
+                p = msg.get("payload") if isinstance(msg, dict) else None
+                if p and p.get("event") == "crash":     # first-chance exception (SEH-swallowed)
+                    crash["hit"] = True
+                    crash["addr"] = p.get("address") or p.get("pc") or ""
+                    crash["report"] = ("%s at %s (first-chance)"
+                                       % (p.get("kind", "access-violation"), crash["addr"]))
+            script.on("message", _on_message)
             script.load()
             _exports = getattr(script, "exports_sync", None) or script.exports
             try:
@@ -197,6 +218,10 @@ class FridaStalkerCoverage:
         ci = triage.parse(crash["report"])
         if crash["hit"] and not ci.crashed:      # Frida saw a crash it couldn't classify
             ci = triage.parse("", win_exit=0xC0000005)   # default: access-violation
+        if crash["hit"] and crash["addr"]:
+            ci.summary = (f"access-violation at {crash['addr']} "
+                          f"(first-chance, SEH-swallowed)")
+            ci.stack_hash = ("fc" + crash["addr"].replace("0x", ""))[:16]
         obs = Observation(crashed=ci.crashed, crash=ci, rc=0, output=crash["report"])
         return CoverageRun(observation=obs, edges=edges, instrumented=True)
 

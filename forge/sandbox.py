@@ -15,9 +15,13 @@ An oracle/target asks for a sandbox; it does not care which backend runs it.
 from __future__ import annotations
 
 import os
-import resource
 import subprocess
 from dataclasses import dataclass
+
+try:                        # POSIX-only; absent on Windows (WindowsSandbox instead)
+    import resource
+except ImportError:
+    resource = None
 from pathlib import Path
 from typing import Optional, Protocol, Sequence
 
@@ -45,6 +49,8 @@ class Sandbox(Protocol):
 
 def _limits(cpu_s: int, fsize_bytes: int):
     def _apply():
+        if resource is None:                    # Windows: no POSIX rlimits
+            return
         try:
             resource.setrlimit(resource.RLIMIT_CPU, (cpu_s, cpu_s + 1))
         except (ValueError, OSError):
