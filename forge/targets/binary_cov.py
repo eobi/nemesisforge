@@ -117,18 +117,88 @@ class FridaStalkerCoverage:
 
     def run_with_coverage(self, binary: Path, *, stdin: bytes = b"",
                           timeout: float = 30.0) -> CoverageRun:
-        """Spawn the binary under Frida, arm Stalker around the parse, feed the
-        input, and collect (observation, edges). Falls back to a plain concrete
-        run (no edges) if Frida is unavailable so the contract still holds."""
+        """Spawn the app under Frida, arm Stalker around the parse, deliver the
+        input as a file argument, collect (observation, block-edges). ANY
+        instrumentation failure degrades to a plain concrete run so the campaign
+        keeps progressing — the crash, if any, is still caught by the target.
+
+        The Frida path is validated on the Windows agent (needs frida + the
+        target); the argv-mode fallback is the tested baseline."""
         if not self.available():
             obs = self.target.run(binary, stdin=stdin, timeout=timeout)
             return CoverageRun(observation=obs, edges=set(), instrumented=False)
-        # Real Frida driving is environment-specific (spawn vs attach, mobile
-        # frida-server, stdin plumbing) and lands with the Phase-2 harness; the
-        # contract + agent are in place so that wiring is additive. Until then we
-        # run concretely but mark the run instrumented=False truthfully.
-        obs = self.target.run(binary, stdin=stdin, timeout=timeout)
-        return CoverageRun(observation=obs, edges=set(), instrumented=False)
+        try:
+            return self._frida_run(binary, stdin, timeout)
+        except Exception:
+            obs = self.target.run(binary, stdin=stdin, timeout=timeout)
+            return CoverageRun(observation=obs, edges=set(), instrumented=False)
+
+    def _frida_run(self, binary: Path, stdin: bytes, timeout: float) -> CoverageRun:
+        """Real Frida-Stalker driver (Windows agent). Spawn suspended → inject the
+        Stalker agent → arm → resume → let the parser run → drain block coverage →
+        report a crash if Frida saw one. Best-effort; validated live on the VM."""
+        import os
+        import tempfile
+        import time
+
+        import frida
+
+        from .. import triage
+        from .base import Observation
+
+        # Deliver the input as a file, argv from the target's template (a GUI app
+        # opens a file, not stdin) — mirror WindowsBinaryTarget.run().
+        suffix = getattr(self.target, "input_suffix", "")
+        tmpl = getattr(self.target, "argv_template", ["{file}"])
+        fd, path = tempfile.mkstemp(suffix=suffix)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(stdin or b"")
+        argv = [str(binary)] + [a.replace("{file}", path) for a in tmpl]
+
+        edges: set = set()
+        crash = {"hit": False, "report": ""}
+        try:
+            device = frida.get_local_device()
+            pid = device.spawn(argv)
+            session = device.attach(pid)
+
+            def _on_detached(reason, crashinfo, *_):
+                if crashinfo is not None:
+                    crash["hit"] = True
+                    crash["report"] = getattr(crashinfo, "report", "") or str(crashinfo)
+            session.on("detached", _on_detached)
+
+            script = session.create_script(FRIDA_STALKER_AGENT)
+            script.load()
+            _exports = getattr(script, "exports_sync", None) or script.exports
+            try:
+                _exports.arm()
+            except Exception:
+                pass
+            device.resume(pid)
+
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline and not crash["hit"]:
+                time.sleep(0.05)
+            try:
+                edges = set(_exports.drain() or [])
+            except Exception:
+                edges = set()
+            try:
+                device.kill(pid)
+            except Exception:
+                pass
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+        ci = triage.parse(crash["report"])
+        if crash["hit"] and not ci.crashed:      # Frida saw a crash it couldn't classify
+            ci = triage.parse("", win_exit=0xC0000005)   # default: access-violation
+        obs = Observation(crashed=ci.crashed, crash=ci, rc=0, output=crash["report"])
+        return CoverageRun(observation=obs, edges=edges, instrumented=True)
 
 
 def to_instrumented_candidate(inp: bytes, run: CoverageRun, *,

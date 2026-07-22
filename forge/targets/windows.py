@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .. import triage
-from ..sandbox import LocalSandbox, Sandbox
+from ..sandbox import Sandbox, WindowsSandbox
 from .base import BuildResult, Observation
 
 
@@ -35,7 +35,7 @@ class WindowsBinaryTarget:
         self.binary = Path(binary_path)
         self.name = name
         self.languages = ["binary"]
-        self.sandbox = sandbox or LocalSandbox()
+        self.sandbox = sandbox or WindowsSandbox()
         # How the mutated file is delivered on the command line. The literal
         # token "{file}" is replaced with the temp-file path each run; the
         # default is `App.exe <file>` (the app opens the file positionally).

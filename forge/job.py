@@ -352,3 +352,41 @@ def binary_lab_job(job_id: str, binary_path: str, *,
     oracles: list[Oracle] = [BinaryCrashOracle(), NativeVerifyOracle()]
     escalation: list[Oracle] = [SymbolicOracle(), ExploitabilityOracle()]
     return ctx, discovery, oracles, escalation
+
+
+def windows_hunt_job(job_id: str, exe_path: str, *, name: str,
+                     seeds: Optional[list] = None,
+                     argv_template: Optional[list] = None,
+                     input_suffix: str = "", coverage: str = "auto",
+                     artifacts_root: Optional[Path] = None,
+                     max_tries: int = 300, timeout: float = 20.0
+                     ) -> tuple[JobContext, list[Callable], list[Oracle], list[Oracle]]:
+    """Assemble a Windows desktop-binary hunt (Phase 2): a `WindowsBinaryTarget`
+    driven by the `WindowsFuzzer` in argv/file mode, coverage-guided when a Frida
+    backend is available. A crash climbs the same ladder: binary-crash proves the
+    fault, native-verify discards instrumentation artifacts, exploitability grades
+    the faulting instruction into a primitive. Runs on the native Windows agent.
+
+    coverage: "auto" (use Frida if importable, else argv-mode), "frida", or "off".
+    Returns (ctx, discovery, oracles, escalation)."""
+    from .targets.windows import WindowsBinaryTarget
+    from .agents.windows_fuzzer import WindowsFuzzer
+    from .oracles.binary_crash import BinaryCrashOracle
+    from .oracles.native_verify import NativeVerifyOracle
+    from .oracles.exploitability import ExploitabilityOracle
+
+    root = artifacts_root or (Path.cwd() / "runs")
+    target = WindowsBinaryTarget(exe_path, name=name, argv_template=argv_template,
+                                 input_suffix=input_suffix)
+    ctx = JobContext(job_id, target=target, artifacts_root=root)
+
+    backend = None
+    if coverage in ("auto", "frida"):
+        from .targets.binary_cov import FridaStalkerCoverage
+        fb = FridaStalkerCoverage(target)
+        backend = fb if fb.available() else None
+    discovery = [partial(WindowsFuzzer, seeds=seeds, coverage=backend,
+                         max_tries=max_tries, timeout=timeout)]
+    oracles: list[Oracle] = [BinaryCrashOracle(), NativeVerifyOracle()]
+    escalation: list[Oracle] = [ExploitabilityOracle()]
+    return ctx, discovery, oracles, escalation

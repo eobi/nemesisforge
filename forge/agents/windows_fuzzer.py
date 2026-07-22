@@ -1,0 +1,137 @@
+"""WindowsFuzzer — mutation-based discovery for a closed Windows file-parser.
+
+Drives a `WindowsBinaryTarget` in argv/file mode: mutate a seed file, open it with
+the app, watch for a Windows exception. Coverage-optional:
+
+  - with a `CoverageBackend` (Frida/DynamoRIO, Phase-2 M1): coverage-guided — an
+    input that adds block coverage is kept and further mutated, so the fuzzer
+    climbs into deep parser code. A crash from an instrumented run is emitted as
+    an ``instrumented_crash`` Candidate → the NativeVerifyOracle replays it
+    un-instrumented before it is trusted (the anti-artifact discipline).
+  - without a backend: dumb argv-mode mutation over the seeds — still finds the
+    shallow header/field-overflow bugs typical of image/office parsers (the
+    FastStone class). A native crash is emitted as a ``binary_crash`` Candidate.
+
+Deterministic: mutations are driven by a per-iteration seeded PRNG, so a campaign
+(and any crash) is reproducible. The finder never certifies its own find — the
+oracle chain re-runs to prove it.
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+import random
+from typing import Optional, Sequence
+
+from ..ladder import Candidate, CodeLoc
+from ..targets.binary_cov import CoverageMap
+from .base import Agent
+
+# Distinctive values a parser is most likely to mishandle at a length/size field.
+_EXTREMES = (b"\x00", b"\xff", b"\x7f", b"\x80", b"\xff\xff",
+             b"\xff\xff\xff\xff", b"\x00\x00\x00\x00")
+
+
+class WindowsFuzzer(Agent):
+    kind = "windows_fuzzer"
+
+    def __init__(self, ctx, name: str = "win-fuzz", parent_id: str = "", *,
+                 seeds: Optional[Sequence[bytes]] = None,
+                 coverage=None, max_tries: int = 300, max_crashes: int = 5,
+                 timeout: float = 20.0) -> None:
+        super().__init__(ctx, name=name, parent_id=parent_id)
+        self.seeds = [s for s in (seeds or [b"\x00" * 32]) if s is not None]
+        self.coverage = coverage             # a CoverageBackend, or None
+        self.max_tries = max_tries
+        self.max_crashes = max_crashes
+        self.timeout = timeout
+
+    async def run(self) -> list[Candidate]:
+        instrumented = bool(self.coverage and self.coverage.available())
+        self.objective(
+            f"fuzz the Windows target ({'coverage-guided' if instrumented else 'argv-mode'})")
+        target = self.ctx.target
+        build = await asyncio.to_thread(target.build)
+        if not build.ok:
+            self.log("target unavailable", log=build.log[-300:])
+            return []
+
+        corpus = list(self.seeds)
+        cov = CoverageMap()
+        seen_crashes: set[str] = set()
+        candidates: list[Candidate] = []
+
+        for i in range(self.max_tries):
+            if self.ctx.budget.expired():
+                self.log("budget expired mid-fuzz")
+                break
+            inp = self._mutate(i, corpus)
+            obs, edges, instr = await self._exec(target, build.binary, inp)
+            if edges and cov.observe(edges) > 0:
+                corpus.append(inp)           # coverage-adding → keep + re-mutate
+                self.tool_result("coverage", new=len(cov))
+            if obs.crashed:
+                h = obs.crash.stack_hash or obs.crash.bug_type
+                if h in seen_crashes:
+                    continue
+                seen_crashes.add(h)
+                self.log(f"crash: {obs.crash.summary}")
+                self.tool_result("run", crashed=True, bug=obs.crash.bug_type)
+                candidates.append(self._candidate(inp, obs.crash, instr))
+                if len(candidates) >= self.max_crashes:
+                    break
+        if not candidates:
+            self.log("no crash within fuzz budget")
+        return candidates
+
+    async def _exec(self, target, binary, inp):
+        """Run one input; return (Observation, edges, instrumented?)."""
+        if self.coverage and self.coverage.available():
+            run = await asyncio.to_thread(
+                self.coverage.run_with_coverage, binary, stdin=inp,
+                timeout=self.timeout)
+            return run.observation, run.edges, run.instrumented
+        obs = await asyncio.to_thread(target.run, binary, stdin=inp,
+                                      timeout=self.timeout)
+        return obs, set(), False
+
+    def _candidate(self, inp: bytes, crash, instrumented: bool) -> Candidate:
+        top = crash.top
+        # An instrumented crash must clear native-verify first; a native crash
+        # goes straight to the binary-crash oracle.
+        bug_class = "instrumented_crash" if instrumented else "binary_crash"
+        pc = {"input_b64": base64.b64encode(inp).decode(),
+              "instrumented_bug": crash.bug_type, "native_replays": 5,
+              "timeout": self.timeout}
+        return Candidate(
+            bug_class=bug_class,
+            title=crash.summary or f"{crash.bug_type} crash",
+            rationale=f"fuzzing found a {len(inp)}-byte input that triggers "
+                      f"{crash.bug_type} in {self.ctx.target.name}",
+            location=CodeLoc(path=top.file if top else "", line=top.line if top else 0,
+                             symbol=top.func if top else ""),
+            agent=self.name, proposed_check=pc,
+            crash={"bug_type": crash.bug_type, "stack_hash": crash.stack_hash})
+
+    def _mutate(self, i: int, corpus: list) -> bytes:
+        """Deterministic mutation of a corpus entry (reproducible by iteration)."""
+        rng = random.Random(i * 2654435761)
+        buf = bytearray(corpus[rng.randrange(len(corpus))])
+        if not buf:
+            buf = bytearray(b"\x00" * 16)
+        strat = i % 5
+        if strat == 0:                       # extreme value at a random offset
+            off = rng.randrange(len(buf))
+            v = rng.choice(_EXTREMES)
+            buf[off:off + len(v)] = v
+        elif strat == 1:                     # bit/byte flip
+            off = rng.randrange(len(buf))
+            buf[off] ^= 1 << rng.randrange(8)
+        elif strat == 2:                     # havoc a header field (early bytes)
+            off = rng.randrange(min(32, len(buf)))
+            buf[off:off + 4] = (0xFFFFFFFF).to_bytes(4, "little")
+        elif strat == 3:                     # grow (long run → overflow copies)
+            buf += bytes(rng.choice(_EXTREMES)) * rng.randrange(1, 64)
+        else:                                # truncate (short read / underflow)
+            buf = buf[:max(1, len(buf) // 2)]
+        return bytes(buf)

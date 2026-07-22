@@ -92,6 +92,41 @@ class LocalSandbox:
         )
 
 
+class WindowsSandbox:
+    """Windows subprocess execution for the native fuzz agent (Phase 2).
+
+    POSIX rlimits (`setrlimit`/`setpgrp`) don't exist on Windows, so a crashing
+    GUI file-parser is bounded by a hard wall-clock timeout instead; the process
+    is killed on timeout. Crash detection is by exit code: a Windows process that
+    dies on an unhandled exception exits WITH its NTSTATUS exception code, which
+    `triage.parse(win_exit=...)` decodes. Plain subprocess, so it also runs on a
+    dev box for the argv/file plumbing tests — but it is NOT isolation; run it
+    only against the operator's own installed app in a disposable VM snapshot."""
+    isolated = False
+
+    def run(self, argv, *, cwd=None, stdin=b"", timeout=30.0, env=None):
+        try:
+            p = subprocess.run(
+                list(argv), cwd=str(cwd) if cwd else None, input=stdin,
+                capture_output=True, timeout=timeout,
+                env={**os.environ, **(env or {})},
+            )
+        except subprocess.TimeoutExpired as e:
+            return ExecResult(rc=124,
+                              stdout=(e.stdout or b"").decode("utf-8", "replace")
+                              if isinstance(e.stdout, bytes) else (e.stdout or ""),
+                              stderr=(e.stderr or b"").decode("utf-8", "replace")
+                              if isinstance(e.stderr, bytes) else (e.stderr or ""),
+                              timed_out=True)
+        except (FileNotFoundError, OSError) as e:
+            return ExecResult(rc=127, stdout="", stderr=str(e))
+        return ExecResult(
+            rc=p.returncode,
+            stdout=p.stdout.decode("utf-8", "replace") if p.stdout else "",
+            stderr=p.stderr.decode("utf-8", "replace") if p.stderr else "",
+        )
+
+
 def require_isolation(sandbox: Sandbox, *, allow_local: bool = False) -> None:
     """Guard used before running attacker-influenced code against a real target.
     Refuses a non-isolated sandbox unless the caller explicitly opts into dev."""
