@@ -383,13 +383,13 @@ def windows_hunt_job(job_id: str, exe_path: str, *, name: str,
     # Reliable crash detection via first-chance exceptions (catches SEH-swallowed
     # access-violations that exit 0). Set on the target so BOTH discovery and
     # oracle verification observe the crash the same way — fixing the native-verify
-    # contradiction where a real SEH crash was refuted as an artifact. Independent
-    # of coverage; degrades to exit-code detection when frida is absent.
-    if coverage != "off":
-        from .targets.binary_cov import FridaExceptionObserver
-        obs = FridaExceptionObserver(target)
-        if obs.available():
-            target.crash_observer = obs
+    # contradiction where a real SEH crash was refuted as an artifact. This is the
+    # crash SIGNAL and is independent of the coverage setting (so `coverage=off`
+    # still catches SEH crashes); degrades to exit-code detection without frida.
+    from .targets.binary_cov import FridaExceptionObserver
+    _obs = FridaExceptionObserver(target)
+    if _obs.available():
+        target.crash_observer = _obs
 
     # Coverage backend for the fuzz-feedback loop. drcov (DynamoRIO) is preferred
     # — module-relative blocks (ASLR-safe), all threads — with Frida-Stalker as the
