@@ -391,8 +391,16 @@ def windows_hunt_job(job_id: str, exe_path: str, *, name: str,
         if obs.available():
             target.crash_observer = obs
 
+    # Coverage backend for the fuzz-feedback loop. drcov (DynamoRIO) is preferred
+    # — module-relative blocks (ASLR-safe), all threads — with Frida-Stalker as the
+    # fallback. Crash detection is the observer's job, not the coverage backend's.
     backend = None
-    if coverage in ("auto", "frida"):
+    if coverage in ("auto", "drcov"):
+        from .targets.win_coverage import DrcovCoverage
+        db = DrcovCoverage(target)
+        if db.available():
+            backend = db
+    if backend is None and coverage in ("auto", "frida"):
         from .targets.binary_cov import FridaStalkerCoverage
         fb = FridaStalkerCoverage(target)
         backend = fb if fb.available() else None

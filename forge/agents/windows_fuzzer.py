@@ -62,11 +62,14 @@ class WindowsFuzzer(Agent):
         seen_crashes: set[str] = set()
         candidates: list[Candidate] = []
 
-        for i in range(self.max_tries):
+        # Run the raw seeds UNMODIFIED first — a seed is often a crashing PoC or
+        # high-value corpus that mutation would destroy on iteration 0. Then fuzz.
+        raw = list(self.seeds)
+        for i in range(len(raw) + self.max_tries):
             if self.ctx.budget.expired():
                 self.log("budget expired mid-fuzz")
                 break
-            inp = self._mutate(i, corpus)
+            inp = raw[i] if i < len(raw) else self._mutate(i - len(raw), corpus)
             obs, edges, instr = await self._exec(target, build.binary, inp)
             if edges and cov.observe(edges) > 0:
                 corpus.append(inp)           # coverage-adding → keep + re-mutate
@@ -91,15 +94,25 @@ class WindowsFuzzer(Agent):
         return candidates
 
     async def _exec(self, target, binary, inp):
-        """Run one input; return (Observation, edges, instrumented?)."""
+        """Run one input; return (Observation, edges, instrumented?). Coverage and
+        crash detection can come from different instruments: drcov yields edges but
+        no crash; the exception observer yields the reliable crash. Prefer a crash
+        the coverage backend itself observed (Frida-Stalker has a first-chance
+        handler); otherwise take the crash from the target's observer."""
+        edges: set = set()
+        instr = False
+        obs = None
         if self.coverage and self.coverage.available():
             run = await asyncio.to_thread(
                 self.coverage.run_with_coverage, binary, stdin=inp,
                 timeout=self.timeout)
-            return run.observation, run.edges, run.instrumented
-        obs = await asyncio.to_thread(target.run, binary, stdin=inp,
-                                      timeout=self.timeout)
-        return obs, set(), False
+            edges, instr = run.edges, run.instrumented
+            if run.observation.crashed:
+                obs = run.observation
+        if obs is None:
+            obs = await asyncio.to_thread(target.run, binary, stdin=inp,
+                                          timeout=self.timeout)
+        return obs, edges, instr
 
     _MARKER = 0x42424242
 

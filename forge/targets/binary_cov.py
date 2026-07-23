@@ -93,12 +93,21 @@ Process.setExceptionHandler(function (d) {
          address: d.address ? d.address.toString() : '', pc: pc });
   return false;
 });
+function norm(addr) {
+  // MODULE-RELATIVE block id (name+offset) so coverage is ASLR-invariant across
+  // process-per-input spawns — the fix for "every run looks all-new".
+  try {
+    var m = Process.findModuleByAddress(addr);
+    if (m) return m.name + '+' + addr.sub(m.base).toString();
+  } catch (e) {}
+  return addr.toString();
+}
 function armStalker(tid) {
   Stalker.follow(tid, {
     events: { compile: true },
     onReceive: function (events) {
       const parsed = Stalker.parse(events, {stringify:false, annotate:false});
-      for (const ev of parsed) { if (ev.length >= 2) seen.add(ev[1].toString()); }
+      for (const ev of parsed) { if (ev.length >= 2) seen.add(norm(ev[1])); }
     }
   });
 }
