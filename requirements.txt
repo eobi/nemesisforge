@@ -1,0 +1,11 @@
+# Nemesis Forge — pinned runtime for the Linux Docker image + the Windows package.
+# Core (always):
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2
+# Engine extras (Docker/full): symbolic lens + closed-binary coverage.
+angr
+frida
+# Dev / self-verify:
+pytest>=8
+httpx>=0.27

@@ -3,13 +3,24 @@ name = "nemesis-forge"
 version = "0.1.0"
 description = "Zero-day discovery → proven-exploit engine. LLM sub-agents propose; deterministic oracles prove; a fault is escalated up a ladder to a vendor-grade exploit primitive."
 requires-python = ">=3.11"
+# Core runtime is deliberately tiny (the web layer + a raw-HTTP LLM client). Every
+# heavy engine dep is a guarded, lazy import so the base install stays slim; the
+# extras below turn on the symbolic lens (angr) and closed-binary coverage (frida).
 dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "pydantic>=2",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27"]
+# Linux Docker image: source/coverage hunting + the symbolic lens.
+full = ["angr", "frida"]
+# Windows zero-day image: closed-binary coverage + first-chance crash detection.
+windows = ["frida"]
+
+[project.scripts]
+forge-windows-hunt = "forge.windows_hunt:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -17,6 +28,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["forge*"]
+
+[tool.setuptools.package-data]
+forge = ["../ui/*.html", "../ui/*.css", "../ui/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

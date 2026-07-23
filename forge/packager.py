@@ -112,10 +112,31 @@ def assemble_packet(finding: Finding, ctx: JobContext, *, llm=None) -> dict:
     if repro_src and Path(repro_src).exists():
         repro_bytes = Path(repro_src).read_bytes()
     (outdir / "reproducer.bin").write_bytes(repro_bytes)
-    (outdir / "run.sh").write_text(
-        "#!/bin/sh\n# rebuild the target under AddressSanitizer, then:\n"
-        "#   ./target < reproducer.bin\n"
-        "# expect: the sanitizer report in sanitizer.txt\n")
+    # An EXECUTABLE reproduce script (not a stub) for both OSes: point TARGET at
+    # the affected binary/harness and it feeds the reproducer.
+    run_sh = outdir / "run.sh"
+    run_sh.write_text(
+        '#!/bin/sh\n'
+        '# Reproduce this finding. Set TARGET to the affected binary or ASan harness:\n'
+        '#   TARGET=./vulnerable_binary ./run.sh\n'
+        'set -e\n'
+        'DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+        ': "${TARGET:?set TARGET=/path/to/affected/binary}"\n'
+        'echo "[*] feeding reproducer.bin to $TARGET (expect: crash / sanitizer report)"\n'
+        '"$TARGET" < "$DIR/reproducer.bin" || echo "[+] target crashed (expected)"\n'
+        '# file-arg parser instead of stdin? run:  "$TARGET" "$DIR/reproducer.bin"\n')
+    try:
+        run_sh.chmod(0o755)
+    except OSError:
+        pass
+    # Windows reproduce (file-arg parsers, e.g. FastStone/TextMaker).
+    (outdir / "run.ps1").write_text(
+        'param([Parameter(Mandatory=$true)][string]$Target)\n'
+        '$dir = Split-Path -Parent $MyInvocation.MyCommand.Path\n'
+        'Write-Host "[*] opening reproducer.bin with $Target"\n'
+        '& $Target (Join-Path $dir "reproducer.bin")\n'
+        'Write-Host "[+] exit code $LASTEXITCODE (a crash exits with an NTSTATUS code; '
+        'SEH-swallowed faults need a first-chance debugger)"\n')
     # 2. sanitizer report
     san = (finding.verdict.evidence or {}).get("sanitizer_output") or crash.get("summary", "")
     (outdir / "sanitizer.txt").write_text(san or "(no sanitizer output captured)")
@@ -138,6 +159,8 @@ def assemble_packet(finding: Finding, ctx: JobContext, *, llm=None) -> dict:
         "primitive": primitive_stmt,
         "reproducer": str(outdir / "reproducer.bin"),
         "reproducer_len": len(repro_bytes),
+        "run_script": str(outdir / "run.sh"),
+        "run_script_windows": str(outdir / "run.ps1"),
         "sanitizer_report": str(outdir / "sanitizer.txt"),
         "advisory": str(outdir / "advisory.md"),
         "root_cause": root_cause,

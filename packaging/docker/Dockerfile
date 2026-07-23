@@ -15,7 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential git ca-certificates \
       python3 python3-pip python3-venv \
       libssl-dev zlib1g-dev \
+      gdb \
  && rm -rf /var/lib/apt/lists/*
+# gdb is REQUIRED for the exploitability/ACI debug path (faulting-instruction
+# backtrace → write-what-where grade). Without it that oracle silently degrades.
 # libclang-rt-18-dev is REQUIRED: the base clang package ships the compiler but
 # NOT the compiler-rt runtime (libclang_rt.fuzzer/asan), so -fsanitize=fuzzer,address
 # fails to link and every hunt would be hollow. This provides those runtime archives.
@@ -23,13 +26,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # libFuzzer-capable clang is /usr/bin/clang on Linux (no Homebrew LLVM needed).
 ENV FORGE_CLANG=/usr/bin/clang
 
-# Python deps: the engine's web layer + angr for the (now effective) symbolic lens.
-# The LLM client uses raw HTTP (urllib), so no vendor SDK is required.
-RUN python3 -m pip install --no-cache-dir --break-system-packages \
-      "fastapi>=0.110" "uvicorn>=0.29" "pydantic>=2" \
-      "pytest>=8" "httpx>=0.27" angr
-
+# Python deps driven from requirements.txt (single source of truth, shared with
+# the Windows package). The LLM client uses raw HTTP (urllib) — no vendor SDK.
 WORKDIR /forge
+COPY requirements.txt /forge/requirements.txt
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+      -r /forge/requirements.txt
 COPY . /forge
 ENV PYTHONPATH=/forge
 
