@@ -226,6 +226,133 @@ class FridaStalkerCoverage:
         return CoverageRun(observation=obs, edges=edges, instrumented=True)
 
 
+# Exception-observer agent: ONLY a first-chance handler, no Stalker code-rewriting.
+# This is the RELIABLE, low-artifact Windows crash signal — it catches an
+# SEH-swallowed access-violation with its real access type (d.memory.operation),
+# faulting operand (d.memory.address), instruction (d.context.pc), and registers,
+# without rewriting the target (so its crashes are trustworthy, unlike Stalker's).
+FRIDA_EXCEPTION_AGENT = r"""
+'use strict';
+Process.setExceptionHandler(function (d) {
+  var out = { event: 'crash', kind: d.type };
+  try { out.pc = (d.context && d.context.pc) ? d.context.pc.toString() : ''; } catch (e) {}
+  try {
+    if (d.memory) {
+      out.op = d.memory.operation;
+      out.addr = d.memory.address ? d.memory.address.toString() : '';
+    }
+  } catch (e) {}
+  if (!out.addr) { try { out.addr = d.address ? d.address.toString() : ''; } catch (e) {} }
+  try {
+    var c = d.context, regs = {};
+    ['pc','sp','rax','rbx','rcx','rdx','rsi','rdi','rbp','r8','r9','r10','r11',
+     'eax','ebx','ecx','edx','esi','edi','ebp','esp'].forEach(function (r) {
+      try { if (c && c[r] !== undefined && c[r] !== null) regs[r] = c[r].toString(); } catch (e) {}
+    });
+    out.regs = regs;
+  } catch (e) {}
+  send(out);
+  return false;
+});
+"""
+
+# Frida exception types that are real faults worth reporting (not app control-flow
+# exceptions the parser raises and handles normally, which would over-trigger).
+_REPORTABLE_FRIDA_EXC = {
+    "access-violation", "illegal-instruction", "stack-overflow",
+    "abort", "arithmetic", "breakpoint", "system",
+}
+
+
+class FridaExceptionObserver:
+    """Reliable Windows crash detection via a Frida first-chance exception handler
+    ONLY (no Stalker rewriting). Used for BOTH discovery and verification, so an
+    SEH-swallowed crash is caught the same way each time and is never refuted as an
+    'instrumentation artifact' (the native-verify contradiction fix). Provides the
+    faulting address + access type + registers straight into CrashInfo for the
+    exploitability oracle.
+
+    Degrades to the target's exit-code path when frida is absent."""
+
+    name = "frida-exception"
+
+    def __init__(self, target) -> None:
+        self.target = target
+
+    def available(self) -> bool:
+        try:
+            import frida  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    def observe(self, binary: Path, *, stdin: bytes = b"",
+                timeout: float = 15.0) -> Observation:
+        if not self.available():
+            return self.target._run_exitcode(binary, stdin=stdin, timeout=timeout)
+        try:
+            return self._run(binary, stdin, timeout)
+        except Exception:
+            return self.target._run_exitcode(binary, stdin=stdin, timeout=timeout)
+
+    def _run(self, binary: Path, stdin: bytes, timeout: float) -> Observation:
+        import os
+        import tempfile
+        import time
+
+        import frida
+
+        from .. import triage
+
+        suffix = getattr(self.target, "input_suffix", "")
+        tmpl = getattr(self.target, "argv_template", ["{file}"])
+        fd, path = tempfile.mkstemp(suffix=suffix)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(stdin or b"")
+        argv = [str(binary)] + [a.replace("{file}", path) for a in tmpl]
+
+        exc: dict = {}
+        try:
+            device = frida.get_local_device()
+            pid = device.spawn(argv)
+            session = device.attach(pid)
+            script = session.create_script(FRIDA_EXCEPTION_AGENT)
+
+            def _on_message(msg, data):
+                p = msg.get("payload") if isinstance(msg, dict) else None
+                if not p or p.get("event") != "crash":
+                    return
+                kind = (p.get("kind") or "").lower()
+                if kind and kind not in _REPORTABLE_FRIDA_EXC:
+                    return                       # benign app control-flow exception
+                if not exc:
+                    exc.update(p)
+            script.on("message", _on_message)
+            script.load()
+            device.resume(pid)
+
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline and not exc:
+                time.sleep(0.03)
+            try:
+                device.kill(pid)
+            except Exception:
+                pass
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+        if exc:
+            return Observation(crashed=True, crash=triage.crashinfo_from_frida(exc),
+                               rc=0, output=str(exc))
+        # No fault within the window: a GUI viewer legitimately stays open, so this
+        # is benign — NOT a hang/DoS (DoS needs the persistent harness's parse-done
+        # signal to distinguish). Reported as clean, not timed_out, to avoid FPs.
+        return Observation(crashed=False, crash=triage.CrashInfo(), rc=0)
+
+
 def to_instrumented_candidate(inp: bytes, run: CoverageRun, *,
                               title: str = "coverage-guided crash") -> Candidate:
     """Wrap a crash seen under instrumentation as a Candidate the NativeVerifyOracle

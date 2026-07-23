@@ -49,3 +49,28 @@ def test_real_controllability_proves_primitive(tmp_path):
     assert v.primitive.kind is PrimitiveKind.OOB_WRITE and v.primitive.controlled
     # the write extent grew with the input
     assert v.evidence["sizes"][1] > v.evidence["sizes"][0]
+
+
+def test_length_field_scan_finds_declared_length(tmp_path):
+    """A3: for a length-prefixed format, doubling the buffer doesn't scale a
+    declared length; the header scan finds the field that governs the OOB write."""
+    import struct
+    from pathlib import Path
+    from forge.oracles.controllability import ControllabilityOracle
+    from forge.targets.base import BuildResult, Observation
+    from forge.triage import CrashInfo
+
+    class _T:
+        def run(self, binary, *, stdin=b"", symbolize=False, timeout=60.0):
+            length = struct.unpack_from("<I", (bytes(stdin) + b"\0" * 8))[0]
+            return Observation(crashed=True, crash=CrashInfo(
+                crashed=True, bug_type="heap-buffer-overflow",
+                access="WRITE", access_size=length))
+
+    base = struct.pack("<I", 32) + b"A" * 32
+    o1 = _T().run(None, stdin=base)
+    hit = ControllabilityOracle()._scan_length_field(
+        _T(), BuildResult(ok=True, binary=Path("x")), base, o1.crash, 60.0)
+    assert hit is not None
+    off, width, big = hit
+    assert off == 0 and big > 32

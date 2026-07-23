@@ -25,6 +25,9 @@ _ASAN_ERR = re.compile(
 _ACCESS = re.compile(r"\b(READ|WRITE)\s+of\s+size\s+(\d+)", re.I)
 # a symbolized frame:  "#3 0x… in func /path/file.c:42:7"
 _FRAME = re.compile(r"#\d+\s+0x[0-9a-f]+\s+in\s+(\S+)\s+([^\s:]+):(\d+)", re.I)
+# ASan section headers that begin an allocation / free stack (heap-overflow/UAF).
+_ALLOC_HDR = re.compile(r"(?:previously )?allocated by thread .*here:", re.I)
+_FREED_HDR = re.compile(r"freed by thread .*here:", re.I)
 # UBSan one-liner: "file.c:12:5: runtime error: signed integer overflow…"
 _UBSAN = re.compile(r"(\S+):(\d+):\d+:\s*runtime error:\s*(.+)", re.I)
 
@@ -60,6 +63,16 @@ class CrashInfo:
     frames: list[Frame] = field(default_factory=list)
     stack_hash: str = ""               # dedup key (top frames)
     summary: str = ""
+    # Faulting-instruction context — populated by a debugger / the Frida exception
+    # observer on Windows (from d.memory + d.context). Feeds the exploitability
+    # oracle directly so it need not shell out to gdb/lldb/cdb.
+    fault_addr: str = ""               # accessed address (the faulting operand)
+    fault_pc: str = ""                 # faulting instruction address
+    registers: dict = field(default_factory=dict)
+    # ASan allocation/free frames (heap-buffer-overflow / UAF), for misuse-triage's
+    # deterministic "allocated in the harness?" signal.
+    alloc_frames: list = field(default_factory=list)
+    free_frames: list = field(default_factory=list)
 
     @property
     def top(self) -> Optional[Frame]:
@@ -117,6 +130,28 @@ def _ntstatus_of(code: Optional[int]) -> Optional[int]:
     return u if (u & 0xF0000000) in (0xC0000000, 0x80000000) else None
 
 
+def _labeled_frames(text: str):
+    """Extract ASan allocation + free stack frames — the sections after
+    'allocated by thread … here:' and 'freed by thread … here:'. Feeds
+    misuse-triage's deterministic 'was it allocated in the harness?' signal."""
+    alloc: list = []
+    free: list = []
+    cur = None
+    for line in (text or "").splitlines():
+        if _ALLOC_HDR.search(line):
+            cur = alloc
+            continue
+        if _FREED_HDR.search(line):
+            cur = free
+            continue
+        m = _FRAME.search(line)
+        if m and cur is not None:
+            cur.append(Frame(m.group(1), m.group(2), int(m.group(3))))
+        elif cur is not None and not line.strip():
+            cur = None                          # blank line ends a section
+    return alloc, free
+
+
 def parse(output: str, rc: Optional[int] = None,
           win_exit: Optional[int] = None) -> CrashInfo:
     """Parse a run into CrashInfo. A sanitizer report wins; otherwise a fatal
@@ -144,6 +179,9 @@ def parse(output: str, rc: Optional[int] = None,
 
     for fm in _FRAME.finditer(text):
         ci.frames.append(Frame(fm.group(1), fm.group(2), int(fm.group(3))))
+
+    # Allocation / free stacks (for misuse-triage's deterministic signal).
+    ci.alloc_frames, ci.free_frames = _labeled_frames(text)
 
     # No sanitizer report but the process died on a fatal signal → still a crash
     # (the Phase-C bare-binary path). Memory signals imply a WRITE-ish fault.
@@ -179,4 +217,35 @@ def parse(output: str, rc: Optional[int] = None,
             loc = f" at {top.file}:{top.line}" if top else ""
             ci.summary = (f"{ci.bug_type} ({ci.access or 'access'})"
                           f"{loc}").strip()
+    return ci
+
+
+def crashinfo_from_frida(exc: dict) -> CrashInfo:
+    """Build a CrashInfo from a Frida exception-handler payload — the reliable,
+    low-artifact Windows crash signal (catches SEH-swallowed access-violations a
+    Delphi/GUI app hides from the exit code). Unlike the `win_exit` path, the
+    access type (READ/WRITE) and the faulting address come from `d.memory` /
+    `d.context`, not a fabricated 'conservative WRITE', and dedup keys on the
+    faulting instruction so distinct AVs stay distinct.
+
+    Expected payload keys (from FRIDA_EXCEPTION_AGENT): kind, op (read|write|
+    execute), addr (accessed operand), pc (faulting instruction), regs (dict)."""
+    ci = CrashInfo()
+    if not exc:
+        return ci
+    ci.crashed = True
+    ci.bug_type = (exc.get("kind") or "access-violation").lower()
+    op = (exc.get("op") or "").upper()
+    if op in ("READ", "WRITE"):
+        ci.access = op
+    ci.fault_addr = exc.get("addr") or ""
+    ci.fault_pc = exc.get("pc") or ""
+    ci.registers = dict(exc.get("regs") or {})
+    # Dedup by faulting instruction (module-relative if the caller normalized it),
+    # so two different crash sites are two findings, not one.
+    basis = f"{ci.bug_type}|{op}|{ci.fault_pc or ci.fault_addr}"
+    ci.stack_hash = hashlib.sha1(basis.encode()).hexdigest()[:16]
+    loc = ci.fault_addr or ci.fault_pc
+    ci.summary = (f"{ci.bug_type} ({op or 'access'})"
+                  f"{(' at ' + loc) if loc else ''} (first-chance)")
     return ci

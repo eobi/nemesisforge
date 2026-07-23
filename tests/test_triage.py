@@ -45,3 +45,22 @@ def test_read_is_not_write_primitive():
     ci = parse(_ASAN.replace("WRITE of size 4", "READ of size 8"))
     assert ci.access == "READ"
     assert ci.is_write_primitive() is False
+
+
+def test_parse_captures_alloc_and_free_frames():
+    from forge import triage
+    txt = (
+        "==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x60\n"
+        "READ of size 4 at 0x60 thread T0\n"
+        "    #0 0x1 in use /src/lib.c:10\n"
+        "freed by thread T0 here:\n"
+        "    #0 0x2 in free\n"
+        "    #1 0x3 in do_free /src/lib.c:20\n"
+        "\n"
+        "previously allocated by thread T0 here:\n"
+        "    #0 0x4 in malloc\n"
+        "    #1 0x5 in do_alloc /src/lib.c:30\n")
+    ci = triage.parse(txt)
+    assert ci.crashed
+    assert any("lib.c" in f.file for f in ci.free_frames)
+    assert any("lib.c" in f.file for f in ci.alloc_frames)

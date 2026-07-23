@@ -44,6 +44,13 @@ class WindowsBinaryTarget:
         # sets this so the temp file carries the right suffix.
         self.input_suffix = input_suffix
         self.arch = arch
+        # Reliable crash detector (a FridaExceptionObserver). When set, run()
+        # detects crashes via first-chance exceptions — catching SEH-swallowed AVs
+        # that exit 0 — and, crucially, VERIFICATION replays through the same
+        # observer, so a real crash is never refuted as an instrumentation
+        # artifact. When None, run() falls back to exit-code/NTSTATUS detection
+        # (correct for apps that don't swallow the fault).
+        self.crash_observer = None
 
     def build(self, harness_source: Optional[str] = None, *,
               sanitizer: str = "address",
@@ -54,7 +61,19 @@ class WindowsBinaryTarget:
 
     def run(self, binary: Path, *, stdin: bytes = b"", timeout: float = 30.0,
             symbolize: bool = False) -> Observation:
-        # Deliver the input as a FILE argument, not stdin.
+        # Reliable path: first-chance exception observation (catches SEH-swallowed
+        # AVs). Both discovery and verification go through here, so detection and
+        # re-verification agree.
+        if self.crash_observer is not None:
+            return self.crash_observer.observe(binary, stdin=stdin, timeout=timeout)
+        return self._run_exitcode(binary, stdin=stdin, timeout=timeout)
+
+    def _run_exitcode(self, binary: Path, *, stdin: bytes = b"",
+                      timeout: float = 30.0) -> Observation:
+        """Argv/file execution with exit-code (NTSTATUS) crash detection. Correct
+        for apps that let the fault crash the process; misses SEH-swallowed faults
+        (use crash_observer for those). Kept separate so the observer's own
+        fallback can call it without recursing through run()."""
         fd, path = tempfile.mkstemp(suffix=self.input_suffix)
         try:
             with os.fdopen(fd, "wb") as fh:
@@ -67,8 +86,6 @@ class WindowsBinaryTarget:
                 os.unlink(path)
             except OSError:
                 pass
-        # A crashing Windows process returns its NTSTATUS exception code as the
-        # exit code — parse that (and any captured output) into a typed crash.
         crash = triage.parse(res.output, win_exit=res.rc)
         return Observation(crashed=crash.crashed, crash=crash, rc=res.rc,
                            output=res.output, timed_out=res.timed_out)

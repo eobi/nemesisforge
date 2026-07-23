@@ -24,6 +24,7 @@ import random
 from typing import Optional, Sequence
 
 from ..ladder import Candidate, CodeLoc
+from ..oracles.exploitability import _addr_int
 from ..targets.binary_cov import CoverageMap
 from .base import Agent
 
@@ -77,7 +78,12 @@ class WindowsFuzzer(Agent):
                 seen_crashes.add(h)
                 self.log(f"crash: {obs.crash.summary}")
                 self.tool_result("run", crashed=True, bug=obs.crash.bug_type)
-                candidates.append(self._candidate(inp, obs.crash, instr))
+                # Taint-lite: which input offsets flow to the faulting address?
+                # Bounded, crash-only. Populates control_offsets so the
+                # exploitability oracle's marker substitution proves write-what-where.
+                offsets = await asyncio.to_thread(
+                    self._control_offsets, target, build.binary, inp, obs.crash)
+                candidates.append(self._candidate(inp, obs.crash, instr, offsets))
                 if len(candidates) >= self.max_crashes:
                     break
         if not candidates:
@@ -95,7 +101,38 @@ class WindowsFuzzer(Agent):
                                       timeout=self.timeout)
         return obs, set(), False
 
-    def _candidate(self, inp: bytes, crash, instrumented: bool) -> Candidate:
+    _MARKER = 0x42424242
+
+    def _control_offsets(self, target, binary, inp: bytes, crash, *,
+                         max_offsets: int = 64, width: int = 4) -> list:
+        """Which input offsets control the faulting address? Plant a distinctive
+        marker at each dword offset, re-run through the crash observer, and keep the
+        offsets where the fault address reflects the marker — attacker control of
+        the write/read destination. Bounded and crash-only; needs an observer that
+        supplies a faulting address (skips otherwise)."""
+        base = _addr_int(getattr(crash, "fault_addr", ""))
+        if base is None:
+            return []                            # no address to taint against
+        ctrl: list = []
+        mb = self._MARKER.to_bytes(width, "little")
+        limit = min(len(inp), max_offsets * width)
+        for off in range(0, max(1, limit - width + 1), width):
+            planted = bytearray(inp)
+            planted[off:off + width] = mb
+            try:
+                o = target.run(binary, stdin=bytes(planted), timeout=self.timeout)
+            except Exception:
+                continue
+            if o.crashed:
+                fa = _addr_int(getattr(o.crash, "fault_addr", ""))
+                if fa is not None and (fa & 0xFFFFFFFF) == self._MARKER:
+                    ctrl.append(off)
+                    if len(ctrl) >= 2:           # enough to prove control
+                        break
+        return ctrl
+
+    def _candidate(self, inp: bytes, crash, instrumented: bool,
+                   control_offsets: Optional[list] = None) -> Candidate:
         top = crash.top
         # An instrumented crash must clear native-verify first; a native crash
         # goes straight to the binary-crash oracle.
@@ -103,6 +140,10 @@ class WindowsFuzzer(Agent):
         pc = {"input_b64": base64.b64encode(inp).decode(),
               "instrumented_bug": crash.bug_type, "native_replays": 5,
               "timeout": self.timeout}
+        if control_offsets:
+            pc["control_offsets"] = control_offsets
+            pc["marker"] = self._MARKER
+            pc["marker_width"] = 4
         return Candidate(
             bug_class=bug_class,
             title=crash.summary or f"{crash.bug_type} crash",

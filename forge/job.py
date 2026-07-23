@@ -380,6 +380,17 @@ def windows_hunt_job(job_id: str, exe_path: str, *, name: str,
                                  input_suffix=input_suffix)
     ctx = JobContext(job_id, target=target, artifacts_root=root)
 
+    # Reliable crash detection via first-chance exceptions (catches SEH-swallowed
+    # access-violations that exit 0). Set on the target so BOTH discovery and
+    # oracle verification observe the crash the same way — fixing the native-verify
+    # contradiction where a real SEH crash was refuted as an artifact. Independent
+    # of coverage; degrades to exit-code detection when frida is absent.
+    if coverage != "off":
+        from .targets.binary_cov import FridaExceptionObserver
+        obs = FridaExceptionObserver(target)
+        if obs.available():
+            target.crash_observer = obs
+
     backend = None
     if coverage in ("auto", "frida"):
         from .targets.binary_cov import FridaStalkerCoverage
