@@ -11,3 +11,6 @@ runs/
 .env
 hunt/
 temp.md
+
+# Built release artifacts (Windows portable zip, etc.)
+dist/
