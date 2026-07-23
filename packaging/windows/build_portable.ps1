@@ -44,6 +44,11 @@ Copy-Item (Join-Path $here "nrzd.cmd") (Join-Path $stage "nrzd.cmd") -Force
 Copy-Item (Join-Path $root "docs\WINDOWS_VM_RUNBOOK.md") (Join-Path $stage "RUNBOOK.md") -Force
 
 Write-Host "[5/5] zip"
+# Drop the build-only downloads so customers get a clean bundle (not the ~15 MB
+# embeddable installer + get-pip bootstrap we only needed to assemble it).
+Remove-Item -Force (Join-Path $stage $emb) -ErrorAction SilentlyContinue
+Remove-Item -Force (Join-Path $stage "get-pip.py") -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force (Join-Path $stage "python\forge\**\__pycache__") -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force (Join-Path $here $Out) | Out-Null
 $zip = Join-Path $here "$Out\NemesisRedZeroDay-portable.zip"
 Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -Force
