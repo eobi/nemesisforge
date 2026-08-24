@@ -10,7 +10,7 @@ authors:
   - given-names: Obi Ebuka
     family-names: David
     alias: "Obi Ebuka David"
-    affiliation: "Department of Computer Science, University of Dayton"
+    affiliation: "Department of Computer Science, University of Dayton, Ohio, USA"
 repository-code: "https://github.com/eobi/nemesisforge"
 abstract: >-
   An autonomous vulnerability discovery engine built around a single

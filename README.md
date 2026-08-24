@@ -347,7 +347,7 @@ closes or a fix ships, whichever comes first.
 ## Author
 
 **Obi Ebuka David**
-Department of Computer Science, University of Dayton
+Department of Computer Science, University of Dayton, Ohio, USA
 
 Built alongside research on triage and proof for memory-safety findings. The
 measurements this engine produces are more useful with a second pair of eyes on
@@ -369,7 +369,7 @@ styles reorder it to "David, O. E."
   version = {1.0.0},
   url     = {https://github.com/eobi/nemesisforge},
   license = {MIT},
-  note    = {Department of Computer Science, University of Dayton}
+  note    = {Department of Computer Science, University of Dayton, Ohio, USA}
 }
 ```
 
@@ -377,7 +377,7 @@ Plain text:
 
 > Obi Ebuka David (2026). *Nemesis Forge: an LLM fleet proposes, deterministic
 > oracles prove* (version 1.0.0) [Computer software]. Department of Computer
-> Science, University of Dayton. https://github.com/eobi/nemesisforge
+> Science, University of Dayton, Ohio, USA. https://github.com/eobi/nemesisforge
 
 **Cite the commit, not the branch.** This engine produces measurements, and a
 measurement is only reproducible against a fixed version of the thing that produced
