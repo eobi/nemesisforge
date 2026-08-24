@@ -38,3 +38,6 @@ arvo/corpus/
 findings/*-email.txt
 findings/*DISCLOSURE-CONTACT*
 findings/disclosure-clock.*
+
+# Launch copy is not part of the software.
+docs/ANNOUNCE.md
