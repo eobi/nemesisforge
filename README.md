@@ -335,9 +335,12 @@ message. It is the finding itself: no correspondence, no contact details, and no
 disclosure timeline. Those belong between a researcher and a maintainer, not in a
 public repository.
 
-It also carries a result that did **not** survive. That is deliberate. An engine that
-only ever confirms is not an engine, it is a generator with good manners, so the
-retraction is kept with its reason.
+It also carries [a result that did **not** survive](findings/RETRACTED-jbig2dec-allocation.md).
+A 55-byte input drove a JBIG2 decoder to request 6.85 GB, which looked like a finding
+until native replay showed the library checks that allocation and recovers. What the
+fuzzer had flagged was its own resource limit. That retraction is kept with its reason,
+because an engine that only ever confirms is not an engine, it is a generator with good
+manners.
 
 Findings here follow a 90-day disclosure window and are published when the window
 closes or a fix ships, whichever comes first.
