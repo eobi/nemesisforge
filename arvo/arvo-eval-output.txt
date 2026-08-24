@@ -1,0 +1,20 @@
+corpus: 210 bugs, 11 projects, 24 features
+class distribution: {'WRITE': 39, 'READ': 97, 'DoS': 74} 
+
+  held-out project              n  majority    size    ours     acc  note
+  cyclonedds                    3     0.400   0.000   0.000   0.000
+  dav1d                         5     0.190   0.222   0.556   0.600
+  graphicsmagick               44     0.254   0.227   0.334   0.364
+  libjpeg-turbo.dev             2     0.333   0.000   0.000   0.000
+  libvips                      41     0.253   0.222   0.194   0.341
+  mdbtools                      7     0.148   0.419   0.317   0.286
+  mruby                        49     0.207   0.336   0.312   0.306
+  njs                          11     0.143   0.315   0.250   0.364
+  skcms                         3     0.000   0.000   0.000   0.000
+  uWebSockets                  15     0.140   0.215   0.078   0.133
+  wolfmqtt                     30     0.154   0.402   0.185   0.233
+
+  MEAN over 11 valid folds            0.202   0.214   0.202   0.239
+  folds skipped as degenerate: 0
+
+  headline: leave-one-project-out macro-F1 0.202 against 0.202 majority and 0.214 size-only.

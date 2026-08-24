@@ -18,6 +18,7 @@ _MEMORY_BUGS = {"segv", "bus-error"}
 
 
 class DeviceCrashOracle:
+    """Proves an Android native crash from a tombstone. Certifies rung 1 on device."""
     name = "device-crash"
     handles = {"android_crash"}
 

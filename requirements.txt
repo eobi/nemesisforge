@@ -1,8 +1,7 @@
 # Nemesis Forge — pinned runtime for the Linux Docker image + the Windows package.
-# Core (always):
-fastapi>=0.110
-uvicorn>=0.29
-pydantic>=2
+# Core (always): NOTHING. The engine core is standard library only.
+# Every line below is an optional lens. Without them the engine still runs and
+# says in its output which lens was unavailable.
 # Engine extras (Docker/full): symbolic lens + closed-binary coverage.
 angr
 frida

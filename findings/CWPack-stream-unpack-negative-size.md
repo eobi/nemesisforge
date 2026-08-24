@@ -1,6 +1,7 @@
 # CWPack — heap out-of-bounds (negative-size `memmove`) in the stream-unpack refill handler
 
-**Status:** candidate for coordinated disclosure — *no public report found* (see §7)
+**Status:** **reported privately to the maintainer 2026-08-19** — fix window 90 days, expires
+**2026-11-17**; *no public report found* at time of reporting (see §7); no CVE assigned
 **Discovered by:** Nemesis Forge (autonomous fuzzing engine), 2026-07-18
 **Class:** CWE-787 / CWE-131 — out-of-bounds write via unchecked short read → negative size passed to `memmove`
 **Severity (provisional):** **High — CVSS 3.1 base 7.1** (`AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:H`): remote DoS + bounded heap over-read on untrusted input; controlled-write/RCE not proven (see §6)

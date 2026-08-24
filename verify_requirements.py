@@ -136,8 +136,12 @@ def _L5():
     from forge.events import EventBus, EventType
     assert hasattr(EventType, "AGENT_SPAWNED") and hasattr(EventType, "RUNG_UP")
     assert (Path(__file__).parent / "ui" / "index.html").exists()
-    assert _has("forge.web", "app")
-    return OK, "visibility: event bus + SSE web + agent-tree UI"
+    # The web layer was removed when the engine was opened up: a hosted UI is not
+    # something a user of a CLI tool should have to trust or run. Visibility is now
+    # the event bus plus the per-job artifact store, both of which are inspectable
+    # with cat and jq.
+    assert _has("forge.events", "EventType")
+    return OK, "visibility: event bus + per-job artifact store (CLI, no server)"
 
 
 def _L6():

@@ -27,6 +27,7 @@ from ..ladder import (
 
 
 class SanitizerOracle:
+    """The first deterministic prover: a typed sanitizer report is the evidence. Certifies rung 1."""
     name = "sanitizer"
     handles = {"memory_safety"}
 

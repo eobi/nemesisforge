@@ -35,6 +35,7 @@ def decide(vuln_crashed: bool, vuln_bug: str, patched_crashed: bool) -> tuple[Ou
 
 
 class DifferentialOracle:
+    """The universal reward: faults on the vulnerable build, clean on the patched one."""
     name = "differential"
     handles = {"memory_safety"}
 

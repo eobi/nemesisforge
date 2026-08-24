@@ -14,3 +14,22 @@ temp.md
 
 # Built release artifacts (Windows portable zip, etc.)
 dist/
+
+# Cloned third-party targets and corpora. These are other people's repositories,
+# fetched by the hunt scripts. Committing them makes broken submodule pointers that
+# clone empty, and they carry their own licences and histories.
+handhunt/
+arvo/ARVO-Meta/
+runs/
+gen2/crashes/
+
+# Campaign artifacts: build output, seeds, generated corpora, crash piles. All
+# regenerable, and 140 MB that nobody cloning this repository needs. The analysis
+# scripts and the result CSVs in gen2/ ARE kept: they are the data behind the paper.
+gen2/build/
+gen2/seeds/
+gen2/gen/
+gen2/crashes/
+gen2/logs/
+arvo/_work/
+arvo/corpus/

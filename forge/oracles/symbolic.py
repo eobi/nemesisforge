@@ -23,6 +23,7 @@ from ..ladder import (
 
 
 class SymbolicOracle:
+    """angr-backed reachability and primitive proof for binaries. Opt-in lens."""
     name = "symbolic"
     handles = {"binary_crash"}
     target_rung = Rung.PROVEN_PRIMITIVE

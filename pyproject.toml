@@ -6,11 +6,10 @@ requires-python = ">=3.11"
 # Core runtime is deliberately tiny (the web layer + a raw-HTTP LLM client). Every
 # heavy engine dep is a guarded, lazy import so the base install stays slim; the
 # extras below turn on the symbolic lens (angr) and closed-binary coverage (frida).
-dependencies = [
-    "fastapi>=0.110",
-    "uvicorn>=0.29",
-    "pydantic>=2",
-]
+# The engine core is standard library only. Nothing is required to run a
+# campaign, prove a finding, or produce a report. The extras below are opt-in
+# lenses, and the engine degrades to a documented lesser mode without them.
+dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27"]

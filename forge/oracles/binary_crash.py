@@ -21,6 +21,7 @@ _MEMORY_BUGS = {"segv", "bus-error"}
 
 
 class BinaryCrashOracle:
+    """Proves a crash in a closed-source binary by concrete execution. Certifies rung 1."""
     name = "binary-crash"
     handles = {"binary_crash"}
 

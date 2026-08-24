@@ -73,6 +73,7 @@ def decide(native_bugs: list[str]) -> tuple[Outcome, str, str]:
 
 
 class NativeVerifyOracle:
+    """The anti-false-positive gate: replays natively, so instrumentation artifacts do not survive."""
     name = "native-verify"
     # A crash surfaced by an instrumented (coverage) run. Kept distinct from
     # ``binary_crash`` so this oracle is purely additive and never shadows the

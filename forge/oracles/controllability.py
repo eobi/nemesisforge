@@ -43,6 +43,7 @@ def decide(bug1: str, size1: int, bug2: str, size2: int) -> tuple[Outcome, str]:
 
 
 class ControllabilityOracle:
+    """Measures how much of the faulting write the input controls. Certifies rung 4."""
     name = "controllability"
     handles = {"memory_safety"}
     target_rung = Rung.PROVEN_PRIMITIVE   # what a PROVEN verdict certifies
