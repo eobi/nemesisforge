@@ -9,6 +9,7 @@ type: software
 authors:
   - given-names: Obi Ebuka
     family-names: David
+    alias: "Obi Ebuka David"
     affiliation: "Department of Computer Science, University of Dayton"
 repository-code: "https://github.com/eobi/nemesisforge"
 abstract: >-

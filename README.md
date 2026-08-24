@@ -248,9 +248,12 @@ them, so if you use it, please get in touch.
 GitHub renders a **Cite this repository** button from [`CITATION.cff`](CITATION.cff).
 For a bibliography:
 
+The double braces around the name are deliberate: without them most BibTeX
+styles reorder it to "David, O. E."
+
 ```bibtex
-@software{david_nemesisforge_2026,
-  author  = {David, Obi Ebuka},
+@software{obiebukadavid_nemesisforge_2026,
+  author  = {{Obi Ebuka David}},
   title   = {{Nemesis Forge}: an {LLM} fleet proposes, deterministic oracles prove},
   year    = {2026},
   version = {1.0.0},
@@ -262,7 +265,7 @@ For a bibliography:
 
 Plain text:
 
-> David, Obi Ebuka (2026). *Nemesis Forge: an LLM fleet proposes, deterministic
+> Obi Ebuka David (2026). *Nemesis Forge: an LLM fleet proposes, deterministic
 > oracles prove* (version 1.0.0) [Computer software]. Department of Computer
 > Science, University of Dayton. https://github.com/eobi/nemesisforge
 
