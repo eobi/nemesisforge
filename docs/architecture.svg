@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 610" width="1180" height="610" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Inter,Helvetica,Arial,sans-serif">
+<style>
+  .t{font-size:15px;font-weight:650;fill:#16181d}
+  .s{font-size:12.5px;fill:#4a5058}
+  .m{font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;fill:#7b828b}
+  .lab{font-size:10.5px;font-weight:700;letter-spacing:.14em}
+  .big{font-size:18px;font-weight:700;fill:#16181d}
+  .stage{fill:#fff;stroke:#d9dde2;stroke-width:1.4}
+  .prop{fill:#f7faf8;stroke:#1a6b4a;stroke-width:1.6}
+  .prove{fill:#fdf8f7;stroke:#a3352b;stroke-width:1.8}
+</style>
+<defs>
+  <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3.2" orient="auto"><path d="M0,0 L7,3.2 L0,6.4 z" fill="#4a5058"/></marker>
+  <marker id="ar" markerWidth="10" markerHeight="10" refX="8" refY="3.2" orient="auto"><path d="M0,0 L7,3.2 L0,6.4 z" fill="#a3352b"/></marker>
+  <marker id="ag" markerWidth="10" markerHeight="10" refX="8" refY="3.2" orient="auto"><path d="M0,0 L7,3.2 L0,6.4 z" fill="#1a6b4a"/></marker>
+</defs>
+<rect width="1180" height="610" fill="#fff"/>
+
+<text class="lab" x="58" y="34" fill="#1a6b4a">PROPOSER</text>
+<text class="s" x="146" y="34">a model may run here. Being wrong costs compute.</text>
+
+<rect class="prop"  x="58"  y="52" width="236" height="96" rx="6"/>
+<text class="t" x="78" y="80">1 · Harness synthesis</text>
+<text class="s" x="78" y="102">Writes the entry point. Without</text>
+<text class="s" x="78" y="120">one, there is nothing to fuzz.</text>
+<text class="m" x="78" y="139">the only step needing a key</text>
+
+<rect class="prop"  x="332" y="52" width="236" height="96" rx="6"/>
+<text class="t" x="352" y="80">2 · Input shaping</text>
+<text class="s" x="352" y="102">Structure, not random bytes.</text>
+<text class="s" x="352" y="120">Grammar and resource order.</text>
+<text class="m" x="352" y="139">2000/2000 vs 0/2000 accepted</text>
+
+<rect class="stage" x="606" y="52" width="236" height="96" rx="6"/>
+<text class="t" x="626" y="80">3 · Campaign</text>
+<text class="s" x="626" y="102">Coverage-guided, deterministic.</text>
+<text class="s" x="626" y="120">Knobs recorded with the run.</text>
+<text class="m" x="626" y="139">no model in the hot loop</text>
+
+<rect class="prop"  x="880" y="52" width="236" height="96" rx="6"/>
+<text class="t" x="900" y="80">4 · Triage routing</text>
+<text class="s" x="900" y="102">Proposes a root cause and</text>
+<text class="s" x="900" y="120">publishes its own error rate.</text>
+<text class="m" x="900" y="139">may route, may never certify</text>
+
+<path d="M294 100 L328 100" stroke="#4a5058" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<path d="M568 100 L602 100" stroke="#4a5058" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<path d="M842 100 L876 100" stroke="#4a5058" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+
+<line x1="18" y1="262" x2="1162" y2="262" stroke="#a3352b" stroke-width="1.6" stroke-dasharray="8 6"/>
+<text class="m" x="1162" y="254" text-anchor="end" fill="#a3352b">a model may propose anything, and certify nothing</text>
+
+<text class="lab" x="58" y="316" fill="#a3352b">PROVER</text>
+<text class="s" x="130" y="316">no model, ever.</text>
+<text class="s" x="330" y="316">Being wrong here loses a finding, silently and for good.</text>
+
+<rect class="prove" x="58"  y="336" width="470" height="152" rx="6"/>
+<text class="big" x="80" y="370">5 · Eight oracles, one per rung</text>
+<text class="s" x="80" y="396">sanitizer · differential · native replay · binary crash</text>
+<text class="s" x="80" y="416">device crash · controllability · exploitability · symbolic</text>
+<text class="s" x="80" y="446">Deterministic, independent of the proposer, and</text>
+<text class="s" x="80" y="464">reproducible by somebody who does not trust you.</text>
+
+<rect class="prove" x="566" y="336" width="238" height="152" rx="6"/>
+<text class="big" x="588" y="370">6 · The ladder</text>
+<text class="m" x="588" y="396">0  unverified</text>
+<text class="m" x="588" y="414">1  proven fault</text>
+<text class="m" x="588" y="432">2  reachable</text>
+<text class="m" x="588" y="450">3  security relevant</text>
+<text class="m" x="588" y="468">4  controlled primitive</text>
+
+<rect class="stage" x="842" y="336" width="274" height="152" rx="6"/>
+<text class="big" x="864" y="370">7 · Report</text>
+<text class="s" x="864" y="396">The rung the evidence reached,</text>
+<text class="s" x="864" y="416">and, on every finding, what was</text>
+<text class="s" x="864" y="436">NOT established.</text>
+<text class="m" x="864" y="466">downgrade, never drop</text>
+
+<path d="M998 152 L998 196 L300 196 L300 332" stroke="#4a5058" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<text class="m" x="640" y="188" text-anchor="middle">candidate + evidence, handed to the prover</text>
+
+<path d="M528 412 L562 412" stroke="#a3352b" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+<path d="M804 412 L838 412" stroke="#a3352b" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+
+<path d="M685 488 L685 546 L26 546 L26 100 L54 100" stroke="#1a6b4a" stroke-width="1.7" fill="none" stroke-dasharray="7 5" marker-end="url(#ag)"/>
+<text class="m" x="26" y="572" fill="#1a6b4a">refused, and it already named the evidence that was missing</text>
+<text class="m" x="26" y="590" fill="#7b828b">where no oracle exists at all, that is a gap in the engine, reported as one, not buried as a failed finding</text>
+</svg>

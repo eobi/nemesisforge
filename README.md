@@ -56,29 +56,7 @@ it accepted, and silently discarding nearly three quarters of the real findings.
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    subgraph P["PROPOSER  ·  a model may run here"]
-        H["harness<br/>synthesis"]
-        T["triage<br/>routing"]
-    end
-    subgraph D["EXECUTE  ·  deterministic"]
-        F["coverage-guided<br/>campaign"]
-    end
-    subgraph V["PROVER  ·  no model, ever"]
-        O["8 oracles<br/>one per rung"]
-        L["ladder<br/>rung 0..6"]
-    end
-    R["report<br/>+ what was NOT established"]
-
-    H --> F --> T --> O --> L --> R
-    L -. "refused: names the missing evidence" .-> H
-    L -. "refused: no such oracle exists" .-> R
-
-    style P fill:#eef5f1,stroke:#1a6b4a
-    style V fill:#faf0ef,stroke:#a3352b
-    style D fill:#f5f7f9,stroke:#d9dde2
-```
+![Nemesis Forge architecture](docs/architecture.svg)
 
 A model proposes; it never certifies. The ladder is the only thing that decides what
 a finding is worth, and when it refuses it says which evidence was missing. Where an
