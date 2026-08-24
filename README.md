@@ -58,30 +58,129 @@ coverage).
 
 ---
 
-## Use it
+## Get started in five commands
 
-**Run a campaign against a harness you supply.** No model required, because the half
-of the engine that certifies a finding never needed one.
-
-```bash
-python -m forge lab examples/harness_trunc.c --fuzz-time 60
-```
-
-**Point it at a repository.** Harness synthesis is the model's job, so this path wants
-a provider. Without one the static lens still runs and reports leads.
+Each of these runs on a clean clone, needs no API key, and returns in seconds.
 
 ```bash
-python -m forge repo https://github.com/example/lib --provider openai --minutes 5
+# 1. What is available on this machine, and what its absence would cost you
+python -m forge doctor
+
+# 2. The machinery: eight oracles, and the rung each one can certify
+python -m forge oracles
+
+# 3. Your first finding. A real heap overflow, found in about three seconds.
+python -m forge lab examples/harness_trunc.c --fuzz-time 30
 ```
 
-**Inspect the machinery.**
+That third command prints:
+
+```
+  rung 1   heap-buffer-overflow (WRITE)
+  class      memory_safety
+  evidence   coverage-guided fuzzing reached cov=5 in 130 execs and found a
+             4-byte input triggering heap-buffer-overflow
+  NOT shown  anything above rung 1: no oracle certified it
+```
+
+Read the last line first. The engine found a real bug and then told you the honest
+limit of what it proved.
 
 ```bash
-python -m forge oracles     # the eight oracles and the rung each certifies
-python -m forge doctor      # what is available, and what its absence costs
+# 4. Read the evidence it kept. Nothing is hidden behind a server.
+ls runs/*/ && cat runs/*/findings.json | python -m json.tool | head -40
+
+# 5. Give it longer and watch the corpus grow
+python -m forge lab examples/harness_trunc.c --fuzz-time 120 --out runs/longer
 ```
 
-Worked examples with real captured output: [`docs/CLI.md`](docs/CLI.md).
+### Point it at your own code
+
+Write a harness that defines `LLVMFuzzerTestOneInput`, then:
+
+```bash
+python -m forge lab path/to/your_harness.c --fuzz-time 300 --name my-target
+```
+
+Use `examples/harness_trunc.c` as the template. The only contract is that entry point.
+
+### Useful flags
+
+```bash
+--fuzz-time N     seconds per campaign (default 60). Start at 30, go to 300+.
+--out DIR         where artifacts land (default runs/)
+--name NAME       what to call the target in the report
+--job ID          fix the job id, so repeated runs are comparable
+--provider P      attach a model; omit for the deterministic pipeline
+```
+
+---
+
+## Using a model
+
+The engine has two halves. **The half that certifies a finding never needs a model**,
+which is why every command above works without one. A model is the *proposer*: it
+writes harnesses, which is the step that decides whether there is anything to fuzz
+at all.
+
+### Which providers work
+
+| Provider | Set this | Default model |
+|---|---|---|
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-4-8` |
+| `openai` | `OPENAI_API_KEY` | `gpt-5.1` |
+| `gemini` | `GEMINI_API_KEY` | `gemini-2.5-pro` |
+| `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-opus-4-8` |
+| `ollama` | nothing, runs locally | `qwen2.5-coder:7b` |
+| `local` | nothing, any OpenAI-compatible server on `127.0.0.1:9920` | `default` |
+
+### Set one up
+
+```bash
+# A hosted model
+export ANTHROPIC_API_KEY=sk-...
+python -m forge repo https://github.com/DaveGamble/cJSON --provider anthropic --minutes 5
+
+# Or a different one, and pin the model explicitly
+export OPENAI_API_KEY=sk-...
+python -m forge repo https://github.com/DaveGamble/cJSON     --provider openai --model gpt-5.1 --minutes 5 --max-targets 2
+```
+
+### No key, no cloud: run the model locally
+
+`ollama` needs no key and sends nothing off your machine. For a private codebase this
+is usually the right choice.
+
+```bash
+ollama pull qwen2.5-coder:7b
+python -m forge repo https://github.com/DaveGamble/cJSON --provider ollama --minutes 10
+```
+
+Point it elsewhere with `OLLAMA_HOST`, or use `--provider local` for any
+OpenAI-compatible server you are already running.
+
+### What a model changes, and what it does not
+
+Try it without a provider first. It clones, runs the static lens, and says plainly
+what it did not do (about 14 seconds):
+
+```bash
+python -m forge repo https://github.com/DaveGamble/cJSON --max-targets 1
+```
+
+```
+note: no model provider selected, so no harness will be synthesised.
+      The static lens will still run and report leads. To fuzz, either
+      pass --provider, or write a harness and use:  python -m forge lab
+```
+
+That message exists because a silent zero-finding run is indistinguishable from a
+search that genuinely found nothing.
+
+A better model writes better harnesses, and a harness is the difference between
+reaching the parser and never getting past the front door. It does **not** change what
+gets certified. The oracles do not consult it, cannot be persuaded by it, and will
+refuse a rung it claims but cannot evidence.
 
 ---
 
@@ -138,7 +237,7 @@ window closes or a fix ships, whichever is first.
 ## Author
 
 **Obi Ebuka David**
-MSc Computer Science, Department of Computer Science, University of Dayton
+Department of Computer Science, University of Dayton
 
 Built alongside research on triage and proof for memory-safety findings. The
 measurements this engine produces are more useful with a second pair of eyes on
