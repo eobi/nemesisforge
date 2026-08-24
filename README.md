@@ -13,7 +13,7 @@ field most needs.
 
 ---
 
-## Why this rather than another agent
+## Why this exists
 
 Discovery already scales. In the largest published effort to date, Claude Mythos
 identified **23,019** vulnerability candidates; **126** were published as CVEs, and
@@ -31,12 +31,59 @@ AI raised the volume. It did not raise the value. The scarce thing is not a find
 it is **a finding somebody can trust without redoing your work**, and that is what
 this engine is built to produce.
 
-| Most agents | Nemesis Forge |
-|---|---|
-| the **agent** is at the centre, tools serve it | the **oracle** is at the centre, the model serves it |
-| a finding is accepted or rejected | a finding is placed at the rung its evidence reaches |
-| rejection discards | **downgrade, never drop** |
-| reports what it found | also reports what it **could not establish** |
+
+---
+
+## How this differs
+
+| | Typical agent or scanner | Nemesis Forge |
+|---|---|---|
+| What sits at the centre | the **agent**; tools serve it | the **oracle**; the model serves it |
+| Who decides a finding is real | the model, or a model ensemble | eight deterministic oracles, independent of the proposer |
+| A finding it cannot prove | dropped, or reported anyway | **downgraded** to the rung the evidence reaches, never dropped |
+| What it says it did *not* prove | usually nothing | printed on **every** finding, by default |
+| Reproducing its output | needs the vendor, a key, or a service | clone and run, standard library, no key |
+| Its own failure modes | not shipped | a **retracted finding** is in this repository, with the reason |
+| Dependencies | a framework, a server, a database | none for the core |
+
+The one that matters is the third row. A pipeline that drops what it cannot prove
+looks precise and quietly loses real bugs. Of 1,061 publicly attributed AI-assisted
+discoveries, only 1.3% were confirmed exploited, and a strict LLM judge measured
+in this programme reached 1.00 precision at **0.27 recall**: never wrong about what
+it accepted, and silently discarding nearly three quarters of the real findings.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph P["PROPOSER  ·  a model may run here"]
+        H["harness<br/>synthesis"]
+        T["triage<br/>routing"]
+    end
+    subgraph D["EXECUTE  ·  deterministic"]
+        F["coverage-guided<br/>campaign"]
+    end
+    subgraph V["PROVER  ·  no model, ever"]
+        O["8 oracles<br/>one per rung"]
+        L["ladder<br/>rung 0..6"]
+    end
+    R["report<br/>+ what was NOT established"]
+
+    H --> F --> T --> O --> L --> R
+    L -. "refused: names the missing evidence" .-> H
+    L -. "refused: no such oracle exists" .-> R
+
+    style P fill:#eef5f1,stroke:#1a6b4a
+    style V fill:#faf0ef,stroke:#a3352b
+    style D fill:#f5f7f9,stroke:#d9dde2
+```
+
+A model proposes; it never certifies. The ladder is the only thing that decides what
+a finding is worth, and when it refuses it says which evidence was missing. Where an
+oracle does not exist at all, that is reported as a gap in the engine rather than
+buried as a failed finding.
 
 ---
 
@@ -55,6 +102,86 @@ their absence costs, so a null result is never mistaken for a completed search.
 Optional lenses: a libFuzzer-capable clang (coverage-guided discovery), lldb or gdb
 (rung-4 operand evidence), `angr` (symbolic reachability), `frida` (closed-binary
 coverage).
+
+---
+
+## A sample run, start to finish
+
+Nothing below is typed by hand. This is a clean clone, no API key, no
+configuration.
+
+```
+$ python -m forge lab examples/harness_trunc.c --fuzz-time 30
+
+[10:24:45] job=lab-2d9208e5 harness=examples/harness_trunc.c fuzz_time=30s provider=null
+[10:24:49] 1 finding(s)
+
+  rung 1   heap-buffer-overflow (WRITE)
+  class      memory_safety
+  evidence   coverage-guided fuzzing reached cov=4 in 40 execs and found a
+             4-byte input triggering heap-buffer-overflow
+  NOT shown  anything above rung 1: no oracle certified it
+
+artifacts: runs/lab-2d9208e5
+```
+
+**Four seconds. A real heap overflow, from a four-byte input.** And then the line
+most tools do not print: what it did *not* establish. Rung 1 means a fault was
+observed. It does not mean reachable from real input, security-relevant, or
+controllable, because no oracle certified those things.
+
+The evidence is on disk, not behind a server:
+
+```
+$ ls runs/lab-2d9208e5
+corpus  findings.json  metadata.json  repro-40b8c8495f598517.bin  work
+```
+
+```
+$ python -m json.tool < runs/lab-2d9208e5/findings.json
+
+{
+  "rung": 1,
+  "candidate": {
+    "bug_class": "memory_safety",
+    "title": "heap-buffer-overflow (WRITE)",
+    "rationale": "coverage-guided fuzzing reached cov=4 in 40 execs and found a
+                  4-byte input triggering heap-buffer-overflow"
+  },
+  "evidence": {
+    "input_b64": "N2pwCg==",
+    "coverage": 4,
+    "sanitizer": "address"
+  }
+}
+```
+
+`repro-*.bin` is the crashing input, byte for byte. `input_b64` is the same four
+bytes, so a reviewer can reconstruct them without your file. The full sanitizer
+report and the exact build command are in the same JSON.
+
+Reproduce it yourself:
+
+```bash
+echo 'N2pwCg==' | base64 -d > poc.bin      # 37 6a 70 0a
+```
+
+Those four bytes are the whole bug:
+
+```
+  width      0x6a37 = 27191          (bytes 0 and 1)
+  bpp        112 = 14 bytes/pixel    (byte 2)
+  row_true   27191 * 14 = 380674     computed in 32 bits
+  row_16     (uint16_t)380674 = 52994   <- what malloc actually receives
+  overflow   380674 bytes written into a 52994-byte buffer
+```
+
+Verified: those bytes produce `AddressSanitizer: heap-buffer-overflow`,
+`WRITE of size 380674`.
+
+That is the whole argument of this engine in one run: a finding, its evidence,
+and its limits, produced in four seconds and checkable by somebody who does not
+trust you.
 
 ---
 
