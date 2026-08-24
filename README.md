@@ -327,15 +327,20 @@ faulting below the first page is denial of service, by construction, not opinion
 
 ---
 
-## A finding this engine withdrew
+## Findings
 
-`findings/` contains the CWPack heap out-of-bounds report, and it also contains a
-result that did **not** survive. That is deliberate. An engine that only ever confirms
-is not an engine, it is a generator with good manners. The retraction is kept with its
-reason so the failure mode is visible.
+`findings/` carries the technical report, a replication guide, and the proof of
+concept for a heap out-of-bounds in CWPack, reachable from one truncated MessagePack
+message. It is the finding itself: no correspondence, no contact details, and no
+disclosure timeline. Those belong between a researcher and a maintainer, not in a
+public repository.
 
-Disclosure follows a 90-day window. Materials for a finding are published when the
-window closes or a fix ships, whichever is first.
+It also carries a result that did **not** survive. That is deliberate. An engine that
+only ever confirms is not an engine, it is a generator with good manners, so the
+retraction is kept with its reason.
+
+Findings here follow a 90-day disclosure window and are published when the window
+closes or a fix ships, whichever comes first.
 
 ---
 

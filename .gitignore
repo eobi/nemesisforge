@@ -33,3 +33,8 @@ gen2/crashes/
 gen2/logs/
 arvo/_work/
 arvo/corpus/
+
+# Disclosure correspondence and contact details are not published here.
+findings/*-email.txt
+findings/*DISCLOSURE-CONTACT*
+findings/disclosure-clock.*
