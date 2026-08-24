@@ -14,6 +14,7 @@ An oracle/target asks for a sandbox; it does not care which backend runs it.
 """
 from __future__ import annotations
 
+from . import native as _native
 import os
 import subprocess
 from dataclasses import dataclass
@@ -81,7 +82,7 @@ class LocalSandbox:
             p = subprocess.run(
                 list(argv), cwd=str(cwd) if cwd else None, input=stdin,
                 capture_output=True, timeout=timeout,
-                env={**os.environ, **(env or {})},
+                env={**os.environ, **_native.preload_env(), **(env or {})},
                 preexec_fn=_limits(self.cpu_s, self.fsize_bytes),
             )
         except subprocess.TimeoutExpired as e:

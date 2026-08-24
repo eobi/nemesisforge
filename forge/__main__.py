@@ -39,6 +39,41 @@ def _banner(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+
+def _print_findings(findings) -> None:
+    """Print what a reader actually needs.
+
+    The interesting fields live under `candidate`, not at the top level, so a naive
+    dump of ("title", "bug_type", "function") prints four nulls for a finding that
+    is perfectly well described. Report the rung, what was found, and the evidence
+    sentence; then say plainly what has NOT been established.
+    """
+    for f in findings:
+        d = f.to_dict() if hasattr(f, "to_dict") else dict(vars(f))
+        c = d.get("candidate") or {}
+        if hasattr(c, "to_dict"):
+            c = c.to_dict()
+        elif not isinstance(c, dict):
+            c = dict(vars(c))
+        rung = d.get("rung")
+        rung = getattr(rung, "value", rung)
+        title = c.get("title") or d.get("title") or "(untitled)"
+        print(f"\n  rung {rung}   {title}")
+        if c.get("bug_class"):
+            print(f"  class      {c['bug_class']}")
+        if c.get("rationale"):
+            print(f"  evidence   {c['rationale']}")
+        loc = c.get("location") or {}
+        if isinstance(loc, dict) and loc.get("path"):
+            print(f"  location   {loc['path']}:{loc.get('line', 0)} {loc.get('symbol','')}")
+        # The half nobody prints, and the reason the rung is what it is.
+        ns = d.get("not_shown") or d.get("not_established")
+        if ns:
+            print(f"  NOT shown  {ns}")
+        else:
+            print(f"  NOT shown  anything above rung {rung}: no oracle certified it")
+
+
 def cmd_lab(a: argparse.Namespace) -> int:
     """Run a campaign against a harness you supply. No network, no model needed."""
     from .config import load_env
@@ -61,10 +96,7 @@ def cmd_lab(a: argparse.Namespace) -> int:
     findings = asyncio.run(run_job(ctx, discovery=discovery, oracles=oracles,
                                    escalation=escalation, llm=llm))
     _banner(f"{len(findings)} finding(s)")
-    for f in findings:
-        d = f.to_dict() if hasattr(f, "to_dict") else dict(vars(f))
-        print(json.dumps({k: d.get(k) for k in
-                          ("title", "rung", "bug_type", "function")}, default=str))
+    _print_findings(findings)
     print(f"\nartifacts: {root / job}")
     print("read them with:  ls", root / job)
     return 0
