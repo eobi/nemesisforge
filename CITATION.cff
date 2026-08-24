@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+title: "Nemesis Forge: an LLM fleet proposes, deterministic oracles prove"
+message: >-
+  If you use this software in academic work, please cite it using the metadata
+  below. If you use it to produce a finding, the engine's own reporting
+  convention applies: state the rung the evidence reached, and state what was
+  not established.
+type: software
+authors:
+  - given-names: Obi Ebuka
+    family-names: David
+    affiliation: "Department of Computer Science, University of Dayton"
+repository-code: "https://github.com/eobi/nemesisforge"
+abstract: >-
+  An autonomous vulnerability discovery engine built around a single
+  architectural constraint: a model may propose a candidate at any rung of an
+  exploitability ladder, and may certify none of them. Certification comes from
+  eight deterministic oracles that are independent of the proposer and
+  reproducible by a third party. The engine reports findings at the rung the
+  evidence reaches and states, on every finding, what it did not establish.
+keywords:
+  - vulnerability-discovery
+  - fuzzing
+  - memory-safety
+  - exploitability-triage
+  - differential-oracle
+  - coordinated-disclosure
+  - large-language-models
+  - software-security
+license: MIT
+version: "1.0.0"
+date-released: "2026-08-24"

@@ -140,9 +140,44 @@ window closes or a fix ships, whichever is first.
 **Obi Ebuka David**
 MSc Computer Science, Department of Computer Science, University of Dayton
 
-Built alongside research on triage and proof for memory-safety findings. If you use
-this engine in academic work, please cite the repository and get in touch: the
-measurements it produces are more useful with a second pair of eyes on them.
+Built alongside research on triage and proof for memory-safety findings. The
+measurements this engine produces are more useful with a second pair of eyes on
+them, so if you use it, please get in touch.
+
+## Citing this work
+
+GitHub renders a **Cite this repository** button from [`CITATION.cff`](CITATION.cff).
+For a bibliography:
+
+```bibtex
+@software{david_nemesisforge_2026,
+  author  = {David, Obi Ebuka},
+  title   = {{Nemesis Forge}: an {LLM} fleet proposes, deterministic oracles prove},
+  year    = {2026},
+  version = {1.0.0},
+  url     = {https://github.com/eobi/nemesisforge},
+  license = {MIT},
+  note    = {Department of Computer Science, University of Dayton}
+}
+```
+
+Plain text:
+
+> David, Obi Ebuka (2026). *Nemesis Forge: an LLM fleet proposes, deterministic
+> oracles prove* (version 1.0.0) [Computer software]. Department of Computer
+> Science, University of Dayton. https://github.com/eobi/nemesisforge
+
+**Cite the commit, not the branch.** This engine produces measurements, and a
+measurement is only reproducible against a fixed version of the thing that produced
+it. Include the short SHA of the commit you ran:
+
+```bibtex
+  note = {Commit 83454ef}
+```
+
+If you need a DOI for a journal that requires one, enable the Zenodo integration for
+this repository and cut a release; Zenodo mints a DOI per release and reads the
+metadata from `CITATION.cff` directly.
 
 ## Licence
 
