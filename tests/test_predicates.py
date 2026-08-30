@@ -1,8 +1,19 @@
 """Directed-fuzzing progress predicates (Locus): synthesis pre-filter, source
 instrumentation, and the symbolic strict-relaxation soundness check."""
 import asyncio
+import importlib.util
+
+import pytest
 
 from forge.agents import predicates as P
+
+# The symbolic strict-relaxation checks need claripy, which arrives with angr -- the
+# OPTIONAL lens `forge doctor` reports and prices. Without the guard these four raise
+# ModuleNotFoundError and read as failures, which inverts this project's own rule: a check
+# the machine could not run is a SKIP, never a PASS, and never a failure either.
+_HAS_CLARIPY = importlib.util.find_spec("claripy") is not None
+_needs_claripy = pytest.mark.skipif(
+    not _HAS_CLARIPY, reason="claripy/angr not installed (optional symbolic lens)")
 
 
 class _LLM:
@@ -66,6 +77,7 @@ def test_instrument_skips_when_no_validated():
 
 
 # ── the soundness core: strict-relaxation via SMT (claripy) ──────────────────
+@_needs_claripy
 def test_strict_relaxation_accepts_necessary_condition():
     import claripy
     from forge.agents import predicate_symbolic as PS
@@ -76,6 +88,7 @@ def test_strict_relaxation_accepts_necessary_condition():
     assert PS.is_strict_relaxation([n.SGT(10)], "n != 0", env) is True
 
 
+@_needs_claripy
 def test_strict_relaxation_rejects_over_constraining():
     import claripy
     from forge.agents import predicate_symbolic as PS
@@ -85,6 +98,7 @@ def test_strict_relaxation_rejects_over_constraining():
     assert PS.is_strict_relaxation([n.SGT(10)], "n > 100", env) is False
 
 
+@_needs_claripy
 def test_strict_relaxation_rejects_untranslatable():
     import claripy
     from forge.agents import predicate_symbolic as PS
@@ -92,6 +106,7 @@ def test_strict_relaxation_rejects_untranslatable():
     assert PS.is_strict_relaxation([], "frobnicate(n)", env) is False
 
 
+@_needs_claripy
 def test_translate_operator_subset():
     import claripy
     from forge.agents import predicate_symbolic as PS

@@ -1,0 +1,92 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    # The engine core is standard library only, so the matrix is about the language floor
+    # and not about a dependency resolver. The optional lenses (angr, frida) are NOT
+    # installed here on purpose: their tests must SKIP without them, and a run that
+    # silently required them would be a run nobody could reproduce from a clean clone.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install pytest
+      - run: python -m pytest -q
+
+  doctor:
+    # `doctor` reports which lenses are present and what each absence COSTS. Running it in
+    # CI is how the cost table stays honest: if a lens disappears from the runner image,
+    # this is where it shows up rather than in somebody's null result.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update && sudo apt-get install -y clang llvm
+      - run: python -m forge doctor
+
+  lab:
+    # THE CLAIM THIS JOB DEFENDS. The README says a clean clone with no API key finds a
+    # real heap overflow in the bundled example. That is the first thing a reader tries,
+    # so it is the first thing that should break the build when it stops being true.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update && sudo apt-get install -y clang llvm
+      - run: python -m forge lab examples/harness_trunc.c --fuzz-time 30 --out runs
+      - name: the campaign must have produced a finding
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          runs = sorted(pathlib.Path("runs").glob("lab-*"))
+          if not runs:
+              sys.exit("no run directory was produced")
+          f = runs[-1] / "findings.json"
+          data = json.loads(f.read_text()) if f.is_file() else []
+          if not data:
+              sys.exit(f"{f} is empty: the bundled example must yield a rung-1 finding")
+          print(f"{len(data)} finding(s); top rung {max(d.get('rung', 0) for d in data)}")
+          PY
+
+  mcp:
+    # The MCP surface answers over stdio and refuses ring 2 unless the operator enables it.
+    # A refusal that silently became an execution would be the worst regression this
+    # repository could ship, so it is asserted rather than documented.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: tools/list answers, and nf_lab is refused at ring 1
+        run: |
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+            '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"nf_lab","arguments":{"harness":"examples/harness_trunc.c"}}}' \
+          | python -m forge_mcp --target-root . > /tmp/mcp.out
+          python - <<'PY'
+          import json, sys
+          rows = [json.loads(l) for l in open("/tmp/mcp.out")]
+          names = [t["name"] for t in rows[1]["result"]["tools"]]
+          assert "nf_ladder" in names, names
+          assert "nf_lab" not in names, "ring 2 tool must not be advertised at ring 1"
+          last = rows[2]["result"]
+          assert last.get("isError"), "nf_lab must be refused at ring 1"
+          print("ring 1 surface:", names)
+          PY

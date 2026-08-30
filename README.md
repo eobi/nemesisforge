@@ -83,6 +83,31 @@ coverage).
 
 ---
 
+## Scope and safety
+
+Three things to be explicit about, because two of them decide whether a run is safe and the
+third decides whether it runs at all.
+
+**Harness synthesis requires a model provider.** `forge repo <url>` writes harnesses with an
+LLM, and without a provider configured that agent no-ops cleanly rather than pretending.
+Everything downstream of a harness — the campaign, all eight oracles, the ladder, triage and
+the artifacts — is deterministic and runs with **no key**, which is what `forge lab` exercises
+and what the sample run above shows. If you want harnesses without a model at all, generate
+them with [Harness Forge](https://github.com/eobi/harness-forge) and feed them to `forge lab`.
+
+**The Local and Windows execution backends are NOT isolation.** They are development
+backends: a subprocess guarded by rlimits and a timeout, so the engine is testable on a
+laptop without Docker. They contain nothing. `require_isolation()` refuses them for anything
+that is not a controlled lab target, and that refusal is the mechanism — not a convention.
+
+**Use the Docker sandbox for anything you did not write.** `DockerSandbox` is the production
+backend: `--network none`, memory and pids caps, a real cgroup limit. Generated harnesses and
+third-party targets belong there. Fuzz only code you are authorised to fuzz — this engine
+compiles and executes what you point it at, and it will do that faithfully to a target you had
+no right to touch.
+
+---
+
 ## A sample run, start to finish
 
 Nothing below is typed by hand. This is a clean clone, no API key, no
