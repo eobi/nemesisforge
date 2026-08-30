@@ -313,13 +313,60 @@ Nemesis Forge finding states what it did *not* prove. Together they are one chai
 evidence with no gap in the middle: nobody has to trust that the harness was correct in
 order to trust the finding.
 
+### Generating one, end to end
+
+Get it — there is nothing to install there either, and no key:
+
+```bash
+git clone https://github.com/eobi/harness-forge.git
+cd harness-forge && python3 -m hforge doctor
+```
+
+Point it at the library's public header. It reads the header, proposes every plan the API
+admits, and gates them all:
+
 ```console
-$ hforge propose  cJSON.h --include . --name cjson      # 451 plans, no model, no key
-$ hforge validate build/proposed/cjson_cJSON_ParseWithLength.hir.json
-[PASS] S1..S6   the plan is contract-compliant
-$ hforge emit    build/proposed/cjson_cJSON_ParseWithLength.hir.json -o out
+$ python3 -m hforge propose /path/to/cJSON.h --include /path/to/cjson --name cjson
+451 plan(s) proposed from /path/to/cJSON.h, written to build/proposed/
+
+RANK  PLAN                               BLOCK   EDGES  GREW   KILL  SINKS  N/RUN  WARN
+ 1    cjson_cJSON_AddArrayToObject           0       ?     ?    0%    0%      0     0
+ ...
+```
+
+`BLOCK` is how many gates refused a plan; an `x` prefix marks one that must not be emitted.
+Pick the entry point you want and check it, which runs no compiler:
+
+```console
+$ python3 -m hforge validate build/proposed/cjson_cJSON_ParseWithLength.hir.json
+[PASS] S1  lifetime: created once, destroyed once, never used after
+[PASS] S2  contract: NUL-termination, (ptr,len) pairs, ownership, non-null
+[PASS] S3  ordering: create before use before destroy
+[PASS] S4  boundary: public interface only
+[PASS] S5  input flow: the fuzzer's bytes reach the target
+[PASS] S6  error handling: failure returns are checked before use
+
+static gates pass. The plan is internally consistent and contract-compliant.
+```
+
+Emit the C, and hand it here:
+
+```console
+$ python3 -m hforge emit build/proposed/cjson_cJSON_ParseWithLength.hir.json -o out
+wrote out/harness.c
+wrote out/driver.c   (replay: the campaign binary ignores stdin)
+wrote out/build.sh
+
 $ python -m forge lab out/harness.c --fuzz-time 20
 ```
+
+`forge lab` builds ONE translation unit, so either point it at a single-file library or put
+the emitted harness beside the sources it includes. For a library built from many files,
+`out/build.sh` records the exact command Harness Forge used.
+
+Prefer to let it choose? `hforge batch <header> --source ... --top 32` generates every plan,
+gates them all, gives the survivors a real campaign and ships only what earns it — then feed
+the survivors here one at a time.
 
 Verified end to end on cJSON 1.7.18: the campaign ran and reported **0 findings**, which is
 the right answer for a pinned release that OSS-Fuzz has hammered for years. A null result is
