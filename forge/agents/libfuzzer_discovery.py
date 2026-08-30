@@ -63,7 +63,17 @@ class LibFuzzerDiscoveryAgent(Agent):
             target_sources=self.target_sources or None,
             include_dirs=self.include_dirs or None)
         if not build.ok:
+            # A BUILD FAILURE IS NOT A CLEAN RUN, and reporting it as one is the worst
+            # thing this agent can do. Until this was recorded, a harness that failed to
+            # link produced "0 finding(s)" in under two seconds -- syntactically identical
+            # to a full campaign that genuinely found nothing, and distinguishable only by
+            # noticing the elapsed time. Recorded on the context so the CLI can exit
+            # non-zero and print the compiler's own words.
             self.log("libFuzzer harness build failed", log=build.log[-400:])
+            try:
+                self.ctx.build_failure = build.log or "the harness did not build"
+            except Exception:                                    # noqa: BLE001
+                pass
             return []
         self.em.emit(EventType.HARNESS, engine="libFuzzer", built=True,
                      sinks=len(self.target_sources))

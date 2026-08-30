@@ -97,6 +97,17 @@ def cmd_lab(a: argparse.Namespace) -> int:
         include_dirs=getattr(a, "include", None))
     findings = asyncio.run(run_job(ctx, discovery=discovery, oracles=oracles,
                                    escalation=escalation, llm=llm))
+    # NOTHING FOUND AND NOTHING RUN ARE DIFFERENT ANSWERS. A harness that fails to build
+    # otherwise reports "0 finding(s)" and exits 0, which reads exactly like a clean
+    # campaign against a sound target -- the null result nobody can falsify.
+    failure = getattr(ctx, "build_failure", "")
+    if failure and not findings:
+        _banner("NO CAMPAIGN RAN — the harness did not build")
+        print("\nThis is not a clean result. The compiler said:\n")
+        print("  " + "\n  ".join(str(failure).strip().splitlines()[-12:]))
+        print("\nA harness for a library built from several files needs its sources:")
+        print("  python -m forge lab <harness.c> --source lib.c --include dir/")
+        return 1
     _banner(f"{len(findings)} finding(s)")
     _print_findings(findings)
     print(f"\nartifacts: {root / job}")
