@@ -57,13 +57,26 @@ def _build(tmp_path, src: str, name: str):
     return exe
 
 
-# A crasher that segfaults natively on a long input — a REAL bug, must be PROVEN.
+# A crasher that faults natively on a long input — a REAL bug, must be PROVEN.
+#
+# DELIBERATELY A LARGE HEAP OVERFLOW, not a stack one. The original wrote 400 bytes past a
+# 16-byte stack buffer, which faults on some hosts and not others: it corrupts the frame,
+# and whether it ever touches an unmapped page depends on stack layout, hardening flags and
+# ASLR. It faulted on macOS (SIGSEGV) and in a local Ubuntu container (SIGBUS), and did not
+# fault at all on the CI runner — so the oracle correctly reported "native replay clean" and
+# the test read that as the oracle being wrong. Four megabytes past a 16-byte allocation
+# crosses into unmapped memory on any platform, which is what a test asserting "a real fault
+# is PROVEN" needs: the fault must be the constant and the platform the variable.
 _CRASHER = r"""
 #include <string.h>
+#include <stdlib.h>
 #include <unistd.h>
-int main(void){ char b[16]; char in[512];
+int main(void){ char in[512];
  long n=read(0,in,sizeof(in)); if(n<0)n=0;
- memcpy(b,in,(unsigned long)n);        /* overflow; long input → SIGSEGV */
+ if(n < 64) return 0;                  /* a short input is clean, so the fault is input-borne */
+ char *b = (char*)malloc(16);
+ if(!b) return 0;
+ memset(b,in[0],1u<<22);               /* 4 MB into a 16-byte allocation → fatal signal */
  return b[0]; }
 """
 
