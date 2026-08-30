@@ -289,6 +289,93 @@ refuse a rung it claims but cannot evidence.
 
 ---
 
+## Where the harnesses come from
+
+`forge lab` takes a harness. `forge repo` writes one with a model and keeps it only if a
+short probe reaches non-trivial coverage. That probe is one check, run after a compiler and
+a campaign have already been paid for.
+
+[**Harness Forge**](https://github.com/eobi/harness-forge) is the other half. It is not a
+fuzzer — it is a harness *certifier*, and it proves before any compiler runs the same
+properties this engine currently asks a model to remember:
+
+| what the synthesis prompt here asks for | what Harness Forge proves |
+|---|---|
+| never pass fuzz bytes as a size, length, index or filename | `S2` contract, plus a path-parameter rule |
+| a required pointer passed as NULL is a **harness** bug | `S2` non-null |
+| size output buffers for the one call that uses them | `S2` `(ptr,len)` pairing |
+| call only functions declared in the public header | `S4` boundary |
+| the harness must actually reach target code | `D1`, `D3` and a minimum-edge floor |
+
+The two engines share the **same rung ladder**, which is what makes them compose rather
+than merely coexist. A Harness Forge certificate states what a harness *cannot* find; a
+Nemesis Forge finding states what it did *not* prove. Together they are one chain of
+evidence with no gap in the middle: nobody has to trust that the harness was correct in
+order to trust the finding.
+
+```console
+$ hforge propose  cJSON.h --include . --name cjson      # 451 plans, no model, no key
+$ hforge validate build/proposed/cjson_cJSON_ParseWithLength.hir.json
+[PASS] S1..S6   the plan is contract-compliant
+$ hforge emit    build/proposed/cjson_cJSON_ParseWithLength.hir.json -o out
+$ python -m forge lab out/harness.c --fuzz-time 20
+```
+
+Verified end to end on cJSON 1.7.18: the campaign ran and reported **0 findings**, which is
+the right answer for a pinned release that OSS-Fuzz has hammered for years. A null result is
+only worth reading next to a positive control, so here is one on the same machine, same
+session — `examples/harness_trunc.c`, which carries a known truncation bug:
+
+```
+rung 1   heap-buffer-overflow (WRITE)
+evidence coverage-guided fuzzing reached cov=3 in 54 execs and found a 4-byte input
+```
+
+Pointing the two at each other also found a defect **in Harness Forge**, in one command:
+`hforge audit examples/harness_trunc.c` reported "no LLVMFuzzerTestOneInput entry point
+found" for a file that plainly declares one. The entry point is detected fine; the harness
+makes no library calls at all, so nothing lifts, and the diagnostic named the wrong reason.
+That is the kind of thing only a second tool with different assumptions finds.
+
+---
+
+## MCP
+
+```bash
+python -m forge_mcp --target-root /path/to/work            # ring 1, nothing executes
+python -m forge_mcp --target-root /path/to/work --ring2    # ring 2, campaigns allowed
+```
+
+JSON-RPC 2.0 over stdio, standard library only — the core makes that promise and a tool
+surface needing a package index breaks it exactly when the engine is most useful: offline,
+in a container, on a machine nobody wants to hand an index to.
+
+**The rings are the point.** This engine's job is to run attacker-shaped input through code
+until something breaks. A surface that will do that by default, on a path a model chose, is
+not a tool surface.
+
+| ring | tools | what it may do |
+|---|---|---|
+| 0 | `nf_ladder` `nf_oracles` `nf_explain` `nf_doctor` `nf_harness_contract` | answer questions; execute nothing |
+| 1 | `nf_runs` `nf_findings` | read campaign results under the operator's root |
+| 2 | `nf_lab` | **compile and execute** the given harness under a sanitizer |
+
+Ring 2 is off unless the operator passes `--ring2`, and a refusal says which ring the tool
+needs and how to enable it rather than pretending the tool does not exist:
+
+```json
+{"error": "nf_lab is ring 2; this server runs at ring 1", "enable": "--ring2"}
+```
+
+Every path is resolved — symlinks first — and checked against `--target-root`. Without a
+root, filesystem tools refuse rather than defaulting to the working directory.
+
+`nf_harness_contract` exists for the pairing above: it returns, as data, what this engine
+requires of a harness, so a generator can satisfy it up front instead of a model being asked
+to remember it.
+
+---
+
 ## The ladder
 
 A finding is reported at the rung its evidence reaches, and no higher.
