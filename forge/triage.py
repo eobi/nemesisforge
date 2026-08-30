@@ -40,11 +40,35 @@ _WRITE_PRIMITIVE_CLASSES = {
 # Fatal signals → a bug class, for a bare binary with no sanitizer (Phase C).
 # A subprocess killed by signal N returns rc = -N (POSIX); some shells report
 # 128+N. SIGSEGV/SIGBUS are the memory-safety-relevant crashes.
+# SIGNAL NUMBERS ARE NOT PORTABLE, and hardcoding them cost this engine a real bug.
+#
+# SIGBUS is 10 on macOS and the BSDs, and 7 on Linux. The table below used to say 10
+# unconditionally, so on Linux a genuine memory fault delivered as SIGBUS was not in the map
+# at all: `crashed` came back False, NativeVerifyOracle refuted the finding, and a real
+# overflow was reported as an instrumentation artifact. Worse, 10 on Linux is SIGUSR1, which
+# is not a crash -- so the table was simultaneously blind to a fault and primed to invent
+# one. The bundled example reproduces it: exit 135 = 128 + 7 on Ubuntu, 139 = 128 + 11 here.
+#
+# Taken from the `signal` module so the numbers are whatever this platform actually uses.
+# KNOWN GAP: an analysis host and a target can differ -- a Linux device examined from a mac
+# still resolves the host's numbers. Cross-platform targets need the target's table, not
+# ours, and this does not yet plumb that through.
+def _signo(name: str, fallback: int) -> int:
+    import signal as _signal
+    return int(getattr(getattr(_signal, name, None), "value", fallback)
+               if hasattr(_signal, name) else fallback)
+
+
 _SIGNAL_BUG = {
-    11: "segv", 10: "bus-error", 6: "abort", 4: "illegal-instruction",
-    8: "floating-point-exception", 5: "trap",
+    _signo("SIGSEGV", 11): "segv",
+    _signo("SIGBUS", 10): "bus-error",
+    _signo("SIGABRT", 6): "abort",
+    _signo("SIGILL", 4): "illegal-instruction",
+    _signo("SIGFPE", 8): "floating-point-exception",
+    _signo("SIGTRAP", 5): "trap",
 }
-_MEMORY_SIGNALS = {11, 10}   # SIGSEGV, SIGBUS — likely memory-safety
+# SIGSEGV/SIGBUS — likely memory-safety
+_MEMORY_SIGNALS = {_signo("SIGSEGV", 11), _signo("SIGBUS", 10)}
 
 
 @dataclass
