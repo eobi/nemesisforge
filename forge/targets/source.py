@@ -62,7 +62,17 @@ class SourceTarget:
                  languages: Sequence[str] = ("c",),
                  sandbox: Optional[Sandbox] = None,
                  compiler: str = "clang") -> None:
-        self.workdir = Path(workdir)
+        # RESOLVED, because the compiler does not run here.
+        #
+        # Build steps invoke the toolchain with cwd set to the build directory while argv
+        # carries paths built from this workdir. If the workdir is relative -- and it is by
+        # default, since `lab --out` defaults to "runs" -- clang is handed
+        # `runs/lab-x/work/b1/forge_harness.c` while sitting inside that very directory, and
+        # reports "no such file or directory". The harness was written correctly; only the
+        # path was wrong. Every documented invocation that omits --out took this path, so
+        # the bundled example did not build for anyone following the README, while every
+        # test here passed because they all use absolute temporary directories.
+        self.workdir = Path(workdir).resolve()
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.name = name
         self.languages = list(languages)

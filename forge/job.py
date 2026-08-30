@@ -163,7 +163,7 @@ def lab_job(job_id: str, harness: str, *, artifacts_root: Optional[Path] = None,
     without one it's NullLLM and the deterministic pipeline is unchanged.
     """
     from .llm import make_client
-    root = artifacts_root or (Path.cwd() / "runs")
+    root = (artifacts_root or (Path.cwd() / "runs")).resolve()
     target = SourceTarget(root / job_id / "work", name=name)
     ctx = JobContext(job_id, target=target, artifacts_root=root)
 
@@ -215,7 +215,7 @@ def repo_job(job_id: str, url: str, *, ref: Optional[str] = None,
     from .ingest import repo as _repo
     from .llm import make_client
 
-    root = artifacts_root or (Path.cwd() / "runs")
+    root = (artifacts_root or (Path.cwd() / "runs")).resolve()
     repo_name = re.sub(r"\.git$", "", url.rstrip("/").split("/")[-1]) or "repo"
     info = _repo.clone(url, root / job_id / repo_name, ref=ref)
     # Reachability directing (asset-context speedup): when the caller passes the
@@ -352,7 +352,7 @@ def binary_lab_job(job_id: str, binary_path: str, *,
     from .targets.binary import BinaryTarget
     from .agents.binary_recon import BinaryReconAgent
 
-    root = artifacts_root or (Path.cwd() / "runs")
+    root = (artifacts_root or (Path.cwd() / "runs")).resolve()
     target = BinaryTarget(binary_path, name=name)
     ctx = JobContext(job_id, target=target, artifacts_root=root)
     # Multi-lens on binaries too: the RE lens (imports/strings triage) flags sink
@@ -391,7 +391,7 @@ def windows_hunt_job(job_id: str, exe_path: str, *, name: str,
     from .oracles.native_verify import NativeVerifyOracle
     from .oracles.exploitability import ExploitabilityOracle
 
-    root = artifacts_root or (Path.cwd() / "runs")
+    root = (artifacts_root or (Path.cwd() / "runs")).resolve()
     target = WindowsBinaryTarget(exe_path, name=name, argv_template=argv_template,
                                  input_suffix=input_suffix)
     ctx = JobContext(job_id, target=target, artifacts_root=root)

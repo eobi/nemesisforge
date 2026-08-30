@@ -86,7 +86,10 @@ def cmd_lab(a: argparse.Namespace) -> int:
         return 2
 
     job = a.job or ("lab-" + uuid.uuid4().hex[:8])
-    root = Path(a.out)
+    # Resolved at the boundary: every artifact path downstream is built from this,
+    # and the toolchain is invoked with cwd set to a build directory, so a relative
+    # --out (the default, "runs") produced paths the compiler could not find.
+    root = Path(a.out).resolve()
     _banner(f"job={job} harness={a.harness} fuzz_time={a.fuzz_time}s "
             f"provider={a.provider or 'null'}")
 
@@ -128,7 +131,10 @@ def cmd_repo(a: argparse.Namespace) -> int:
               file=sys.stderr)
 
     job = a.job or ("hunt-" + uuid.uuid4().hex[:8])
-    root = Path(a.out)
+    # Resolved at the boundary: every artifact path downstream is built from this,
+    # and the toolchain is invoked with cwd set to a build directory, so a relative
+    # --out (the default, "runs") produced paths the compiler could not find.
+    root = Path(a.out).resolve()
     _banner(f"job={job} url={a.url} targets={a.max_targets} fuzz_time={a.fuzz_time}s")
 
     ctx, discovery, oracles, escalation, llm = repo_job(
