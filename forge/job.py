@@ -147,6 +147,8 @@ def _dict_from(harness: str, root: Path, job_id: str) -> Optional[Path]:
 def lab_job(job_id: str, harness: str, *, artifacts_root: Optional[Path] = None,
             name: str = "lab-target", max_tries: int = 8, escalate: bool = True,
             fuzz_time: int = 20,
+            target_sources: Optional[list] = None,
+            include_dirs: Optional[list] = None,
             provider: Optional[str] = None, model: Optional[str] = None,
             api_key: Optional[str] = None, base_url: Optional[str] = None):
     """Assemble the end-to-end: fuzz + (optional) LLM brain → sanitizer-prove →
@@ -166,9 +168,23 @@ def lab_job(job_id: str, harness: str, *, artifacts_root: Optional[Path] = None,
     ctx = JobContext(job_id, target=target, artifacts_root=root)
 
     if "LLVMFuzzerTestOneInput" in harness and fuzzengine.find_libfuzzer_clang():
+        # A HARNESS FOR A REAL LIBRARY IS NOT ONE TRANSLATION UNIT.
+        #
+        # Until these were threaded through, `lab` compiled the harness file ALONE. A
+        # harness that includes its library beside it -- which is what any generator emits
+        # for a real target -- failed to link, and the campaign reported zero findings in
+        # under a second. That reads exactly like a clean result. Inlining the library into
+        # the harness worked around the build and then broke triage instead:
+        # _alloc_in_harness saw the library's own allocation inside the harness file and
+        # discarded a real overflow as a harness artifact.
+        #
+        # Empty by default, so the self-contained path every existing example uses is
+        # byte-for-byte what it was.
         discovery = [partial(LibFuzzerDiscoveryAgent, harness=harness,
                              corpus_dir=root / job_id / "corpus",
                              dict_path=_dict_from(harness, root, job_id),
+                             target_sources=[Path(x) for x in (target_sources or [])],
+                             include_dirs=[Path(x) for x in (include_dirs or [])],
                              max_total_time=fuzz_time)]
     else:
         discovery = [partial(FuzzDiscoveryAgent, harness=harness, max_tries=max_tries)]

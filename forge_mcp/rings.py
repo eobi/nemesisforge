@@ -200,7 +200,8 @@ def _nf_findings(s: Session, run: str = "", **_) -> dict:
 # ── ring 2 ────────────────────────────────────────────────────────────────────
 
 def _nf_lab(s: Session, harness: str = "", fuzz_time: int = 30, name: str = "lab-target",
-            out: str = "runs", **_) -> dict:
+            out: str = "runs", sources: Optional[list] = None,
+            includes: Optional[list] = None, **_) -> dict:
     """Run a campaign against a harness. COMPILES AND EXECUTES CODE."""
     if not s.ring2_enabled:
         return {"error": ("ring 2 is disabled. This tool compiles the harness it is given "
@@ -215,6 +216,13 @@ def _nf_lab(s: Session, harness: str = "", fuzz_time: int = 30, name: str = "lab
     import sys
     cmd = [sys.executable, "-m", "forge", "lab", str(h), "--name", name,
            "--fuzz-time", str(fuzz_time), "--out", str(root.resolve(out))]
+    # A harness for a real library is not one translation unit. Every path is resolved
+    # against the operator's root like the harness itself, so this cannot become a way to
+    # compile something from outside it.
+    for src in (sources or []):
+        cmd += ["--source", str(root.resolve(str(src)))]
+    for inc in (includes or []):
+        cmd += ["--include", str(root.resolve(str(inc)))]
     r = subprocess.run(cmd, capture_output=True, text=True,
                        timeout=fuzz_time + 600, cwd=str(root.path))
     return {"command": cmd, "exit": r.returncode,
@@ -250,7 +258,12 @@ RING1_TOOLS = [
 RING2_TOOLS = [
     Tool("nf_lab", RING2, "run a campaign against a harness. COMPILES AND EXECUTES CODE",
          {"type": "object", "properties": {
-             "harness": _STR, "fuzz_time": _INT, "name": _STR, "out": _STR},
+             "harness": _STR, "fuzz_time": _INT, "name": _STR, "out": _STR,
+             "sources": {"type": "array", "items": _STR,
+                         "description": "library sources compiled with the harness; omit "
+                                        "only if the harness is self-contained"},
+             "includes": {"type": "array", "items": _STR,
+                          "description": "header search directories"}},
           "required": ["harness"]}, _nf_lab),
 ]
 

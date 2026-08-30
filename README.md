@@ -382,12 +382,23 @@ wrote out/harness.c
 wrote out/driver.c   (replay: the campaign binary ignores stdin)
 wrote out/build.sh
 
-$ python -m forge lab out/harness.c --fuzz-time 20
+$ python -m forge lab out/harness.c --fuzz-time 20 \
+    --source /path/to/cjson/cJSON.c --include /path/to/cjson
+
+  rung 3   heap-buffer-overflow (WRITE)
+  evidence coverage-guided fuzzing reached cov=9 in 2,998 execs and found a
+           27-byte input triggering heap-buffer-overflow
+  NOT shown  anything above rung 3: no oracle certified it
 ```
 
-`forge lab` builds ONE translation unit, so either point it at a single-file library or put
-the emitted harness beside the sources it includes. For a library built from many files,
-`out/build.sh` records the exact command Harness Forge used.
+`--source` and `--include` are repeatable and name the library the harness calls into. Omit
+them and the harness must be self-contained, which is exactly what `lab` did before and what
+`examples/harness_trunc.c` still does — nothing about that path changed.
+
+**Do not inline the library into the harness to avoid the flags.** It builds, and then the
+finding is thrown away: the misuse triage asks whether the overflowed buffer was allocated
+in the harness, an inlined library's allocation is attributed to the harness file, and a
+real overflow is discarded as a harness artifact.
 
 Prefer to let it choose? `hforge batch <header> --source ... --top 32` generates every plan,
 gates them all, gives the survivors a real campaign and ships only what earns it — then feed

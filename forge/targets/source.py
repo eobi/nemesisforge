@@ -26,7 +26,13 @@ _DRIVER = "forge_lf_driver"
 
 # Tokens that appear in C++ but never in valid C — so detection never mis-flags a
 # C harness (which would otherwise fail to link against the C target sources).
-_CPP_MARKERS = ('extern "C"', "nullptr", "reinterpret_cast", "static_cast",
+# NOT `extern "C"`. That is the marker of a C entry point kept LINKABLE FROM C++ -- the
+# guard every correct libFuzzer harness carries -- and treating it as evidence of a C++
+# harness inverted its meaning. A generated C harness was compiled as C++, exported the
+# unmangled symbol its own guard asked for, and then failed to link against a driver that
+# wanted the mangled one. The campaign found a real heap overflow and the oracle threw it
+# away as a build failure.
+_CPP_MARKERS = ("nullptr", "reinterpret_cast", "static_cast",
                 "::", "template<", "template <", "std::")
 
 

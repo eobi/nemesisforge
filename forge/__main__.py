@@ -92,7 +92,9 @@ def cmd_lab(a: argparse.Namespace) -> int:
 
     ctx, discovery, oracles, escalation, llm = lab_job(
         job, harness, artifacts_root=root, name=a.name,
-        fuzz_time=a.fuzz_time, provider=a.provider)
+        fuzz_time=a.fuzz_time, provider=a.provider,
+        target_sources=getattr(a, "source", None),
+        include_dirs=getattr(a, "include", None))
     findings = asyncio.run(run_job(ctx, discovery=discovery, oracles=oracles,
                                    escalation=escalation, llm=llm))
     _banner(f"{len(findings)} finding(s)")
@@ -213,6 +215,11 @@ def main(argv=None) -> int:
     p.add_argument("--job", default=None)
     p.add_argument("--provider", default=None,
                    help="model provider; omit for the deterministic pipeline")
+    p.add_argument("--source", action="append", default=None, dest="source",
+                   help="library source compiled with the harness (repeatable). Omit and "
+                        "the harness must be self-contained, which is the old behaviour.")
+    p.add_argument("--include", action="append", default=None, dest="include",
+                   help="header search directory (repeatable)")
     p.set_defaults(fn=cmd_lab)
 
     p = sub.add_parser("repo", help="point the engine at a git URL")

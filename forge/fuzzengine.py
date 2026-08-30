@@ -35,7 +35,15 @@ LF_DRIVER = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-extern int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+/* extern "C" MATTERS HERE. This driver is compiled as C++ whenever the harness is, and
+   without the guard it declares a MANGLED symbol while every correct libFuzzer harness
+   exports the unmangled one. The link then fails with "declaration possibly missing
+   extern C", the oracle cannot rebuild, and a real crash is lost as INCONCLUSIVE rather
+   than reported as a finding. */
+#ifdef __cplusplus
+extern "C"
+#endif
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 int main(int argc, char **argv) {
   size_t cap = 1 << 16, n = 0;
   unsigned char *tmp = (unsigned char *)malloc(cap);
